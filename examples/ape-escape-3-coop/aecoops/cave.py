@@ -29,7 +29,9 @@ parameter block. Want new behaviour? Change the Python, not the machine code.
             +0x08  max entries  u32
             +0x0C  applied      u32  how many entries ran on the last tick
             +0x10  writes[]     (addr u32, value u32) * MAX_ENTRIES, 0-terminated
-            +0x150 calls[]      (function u32, argument u32) * MAX_CALLS, consumed
+            +0x158 calls[]      (function u32, argument u32) * MAX_CALLS, consumed
+                                -- after the write list's terminator, so a full
+                                write budget cannot erase the first call
 
 An entry's value word is either a small constant, or -- when bit 31 is set -- the
 address of a word to copy from. That one flag is what lets a rule like "player
@@ -42,9 +44,10 @@ live behind a function that also rebuilds the viewport rectangles, a pad may onl
 bind through a setter. PINE cannot call a function; the cave can. A call entry is
 ``(address of a function, its single $a0 argument)``, and the argument may itself be
 indirect (bit 31 set: read the word at that address). The cave **consumes** a call
-entry -- it zeroes the slot after calling -- so a refilled list fires each call
-once per refill rather than once per frame, which is the difference between
-spawning a partner and spawning sixty of them a second. See ``call()``.
+entry -- it zeroes the function word as it takes it -- so what is left in the region
+is exactly "queued, not yet run", which is both the once-only rule (a refilled list
+would otherwise spawn a partner sixty times a second) and the evidence the host reads
+back to know a call has been made. See ``call()`` and ``read_calls()``.
 """
 
 from __future__ import annotations
