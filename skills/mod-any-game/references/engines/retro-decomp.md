@@ -49,6 +49,13 @@ decomp can take billions of tokens.
 ## Emulator-based mods (no source needed)
 - **Memory scripting:** BizHawk Lua, mGBA Lua/scripting, Dolphin Memory Engine, PCSX2 PINE, RetroArch
   cheats. Find addresses with RAM search. mgba-mcp / PCSX2-MCP expose this to agents.
+  - **PCSX2/PINE specifics** (learned building the Ape Escape 3 co-op mod, field note in
+    `knowledge/games/ape-escape-3/`): a request is `u32 length` + commands and a reply is `u32 size`,
+    `u8 result`, payload; thousands of commands batch into one round trip, capped at 650000 bytes of
+    request and 450000 of reply; one client at a time (a second one is accepted and never read, so it
+    times out); after a `0xFF` the server resets, so reconnect rather than resync. A host-side writer
+    loses every race against the engine's own per-frame state -- put the effect *inside* the game
+    (a code cave reached by redirecting one `jal` in a per-frame path) and keep the policy outside.
 - **ROM hacks:**
   - patch code or data in the ROM and distribute an IPS/BPS/xdelta patch, never the ROM;
   - existing editors: Lunar Magic (SMW), Wiimm's SZS tools (Mario Kart Wii tracks), Pokémon hacking tools.
