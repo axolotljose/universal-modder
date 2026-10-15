@@ -69,6 +69,10 @@ discovery procedure.
 
 ## Quick start
 
+[`docs/GETTING-IT-WORKING.md`](docs/GETTING-IT-WORKING.md) is the same thing as one
+session, in order, with what you should see at each step and what to send back if it
+fights you. The short version:
+
 ```bash
 cd examples/ape-escape-3-coop
 

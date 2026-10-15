@@ -10,7 +10,9 @@ disc rather than to us, and because two pressings of the same game can differ.
 
 `aecoops doctor` lists every one of them and prints `NOT FOUND YET` for the ones
 still unknown. This page is the recipe for each. Do them in order: the first one
-unlocks everything else.
+unlocks everything else. (If you would rather have the whole evening as a checklist
+-- what to type, what you should see, and what to send back when it fights you --
+that is [`GETTING-IT-WORKING.md`](GETTING-IT-WORKING.md).)
 
 Throughout, "the game" means PCSX2 with your own ISO, PINE enabled
 (*Settings → Advanced → Enable PINE IPC Server*), and **a stage actually running**:
