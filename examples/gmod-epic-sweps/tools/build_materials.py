@@ -96,11 +96,12 @@ def icons():
             print("no source icon at", path, "- the shipped one stays as it is")
             continue
         im = Image.open(path).convert("RGB").resize((128, 128), Image.LANCZOS)
-        for folder in ("vgui/entities", "epic_sweps/icons"):
-            d = os.path.join(MAT, folder)
-            os.makedirs(d, exist_ok=True)
-            im.save(os.path.join(d, name + ".png"), optimize=True)
-            print("icon  ", os.path.join(d, name + ".png"))
+        # materials/vgui/entities/<class>.png is the whole contract: GMod reads it for the spawnmenu
+        # tile and the weapon-select HUD with no Lua, no Material() call, no icon table to maintain.
+        d = os.path.join(MAT, "vgui/entities")
+        os.makedirs(d, exist_ok=True)
+        im.save(os.path.join(d, name + ".png"), optimize=True)
+        print("icon  ", os.path.join(d, name + ".png"))
 
 
 def materials(force=False):
