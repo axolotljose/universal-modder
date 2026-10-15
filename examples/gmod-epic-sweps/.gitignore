@@ -1,0 +1,4 @@
+# big generated sources and build output stay out of git
+assets/src/
+dist/
+node_modules/

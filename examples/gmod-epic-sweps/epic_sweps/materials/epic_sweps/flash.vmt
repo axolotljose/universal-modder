@@ -1,0 +1,7 @@
+"LightmappedGeneric"
+{
+	"$basetexture"		"epic_sweps/flash"
+	"$additive"		"1"
+	"$unlitmaterial"	"1"
+	"$nocull"		"1"
+}
