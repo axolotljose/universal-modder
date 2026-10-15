@@ -78,6 +78,12 @@ sound/epic_sweps/zombie_1.wav     "100 zombies"
 sound/epic_sweps/zombie_2.wav     "release the horde"
 ```
 
+One honest substitution: the text the game **shows** is exactly `cfg.Voice` (`"7 THOUSAND F*CKING
+MISSILES"`, `"BLOW UP THIS MAN"`), but the shipped `missiles_2.wav` audio says *"Blow it all up!"* — the
+text-to-speech service refused the literal line. Nothing enforces that: record, download or synthesise
+any take you like and drop it on that filename, and the audio will match the text. If you keep the file
+as it is, nobody hears the difference unless they are looking away.
+
 The other sounds (`explosion`, `launch`, `siren`, `whine`, `portal_hum`) are **generated procedurally**
 by `tools/make_sfx.py` — pure Python, no samples, nothing to license. Every sound Valve ships is only
 *referenced by path*, never copied into the addon.
