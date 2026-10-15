@@ -44,10 +44,9 @@ function EFFECT:Init(data)
 
 	-- the boom is local to the listener: only nearby craters make noise
 	if d < 3000 then
-		local snd = (C.Sounds.MissileBarrage or {}).Explosion
+		local snd = EpicSWEPs.Util.PickSound((C.Sounds.MissileBarrage or {}).Explosion)
 		if snd then
-			EpicSWEPs.Util.PlayAt(self.Origin, snd, math.Clamp(1 - d / 3200, 0.12, 1),
-				SNDLVL_GUNFIRE, math.random(92, 108))
+			EpicSWEPs.Util.PlayAt(self.Origin, snd, math.Clamp(1 - d / 3200, 0.12, 1), nil, math.random(92, 108))
 		end
 	end
 end

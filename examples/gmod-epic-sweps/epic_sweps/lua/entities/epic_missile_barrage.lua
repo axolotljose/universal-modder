@@ -85,7 +85,7 @@ function ENT:PlayVoice(index)
 
 	local v = C.Voice.MissileBarrage[index]
 	if v then
-		EpicSWEPs.Util.PlaySound(self, v.file, v.vol or 1, SNDLVL_GUNFIRE)
+		EpicSWEPs.Util.PlaySound(self, v.file, v.vol or 1)
 	end
 end
 
@@ -139,7 +139,7 @@ function ENT:Think()
 		self.Phase = 1
 
 		self:Announce("TARGET PAINTED", "subtitle", 1.3)
-		EpicSWEPs.Util.PlaySound(self, C.Sounds.MissileBarrage.Siren, 0.9, SNDLVL_GUNFIRE)
+		EpicSWEPs.Util.PlaySound(self, C.Sounds.MissileBarrage.Siren, 0.9)
 
 		local shake = C.Effects.Shake or {}
 		EpicSWEPs.Util.ShakeAt(self:GetPos(), shake.amplitude or 16, shake.frequency or 160,
@@ -205,7 +205,7 @@ function ENT:LaunchMissiles()
 		end
 	end
 
-	EpicSWEPs.Util.PlaySound(self, C.Sounds.MissileBarrage.Launch, 0.8, SNDLVL_GUNFIRE, math.random(90, 112))
+	EpicSWEPs.Util.PlaySound(self, C.Sounds.MissileBarrage.Launch, 0.8, nil, math.random(90, 112))
 
 	if finish >= self.Count then self.Phase = 3 end
 end

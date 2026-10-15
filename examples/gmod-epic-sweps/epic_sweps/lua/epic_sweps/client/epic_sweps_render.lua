@@ -58,8 +58,13 @@ hook.Add("epic_sweps_state", "EpicSWEPs.Render", function(id, data)
 	s.phase = data.ph or s.phase or 0
 	s.spawned = data.sp or s.spawned or 0
 
-	if s.timeline == nil or s.timelineKey ~= (s.count .. ":" .. (s.start or 0)) then
-		s.timelineKey = s.count .. ":" .. (s.start or 0)
+	local key = s.count .. ":" .. (s.start or 0)
+	if s.timeline == nil or s.timelineKey ~= key then
+		-- wait for a complete scene instead of computing one from half a message: the barrage needs its
+		-- centre, radius and start before the shared impact maths can run at all
+		if id == "barrage" and (not s.pos or not s.radius or not s.start) then return end
+
+		s.timelineKey = key
 
 		if id == "barrage" then
 			s.timeline = EpicSWEPs.Timeline.Barrage(s.pos, s.start, s.count)
@@ -170,7 +175,7 @@ local function drawCraters(s, t)
 
 	-- a few real booms per frame, close to the camera only
 	for i = 1, sndCount do
-		U.PlayAt(sounds[i], C.Sounds.MissileBarrage.Explosion, 1, SNDLVL_GUNFIRE)
+		U.PlayAt(sounds[i], U.PickSound(C.Sounds.MissileBarrage.Explosion), 1)
 	end
 end
 

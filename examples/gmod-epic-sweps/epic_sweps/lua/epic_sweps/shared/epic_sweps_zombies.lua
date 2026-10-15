@@ -155,7 +155,8 @@ function M.Vocalise(ent)
 	local snd = EpicSWEPs.Util.PickSound(C.Sounds.ZombieSpawner.Spawn)
 	if not snd then return end
 
-	ent:EmitSound(snd, SNDLVL_GTAV, math.random(92, 108), 0.75, CHAN_VOICE)
+	local U = EpicSWEPs.Util
+	ent:EmitSound(snd, U.LVL.NORM, math.random(92, 108), 0.75, U.CHAN.VOICE)
 end
 
 -- One sweep to keep the headcount honest, whoever deletes our zombies.

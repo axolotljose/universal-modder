@@ -57,6 +57,11 @@ between sessions:
 | `epic_play_voice` | 1 | the voice lines |
 | `epic_screen_shake` | 1 | screen shake |
 
+The two counts are server-authoritative (created with `FCVAR_REPLICATED`, so your HUD shows what the
+server is actually spawning). The three presentation toggles are deliberately per-player: a
+`FCVAR_REPLICATED` **and** `FCVAR_ARCHIVE` cvar overwrites your own saved choice on every connect, which
+is a rude thing for "hide the big text" to do.
+
 There is also a slider panel at **Spawnmenu → Utilities → Epic SWEPs**.
 
 ## How 7000 missiles does not kill the server
@@ -130,30 +135,42 @@ names to load your config before your modules is how addons end up with `attempt
 ## Testing without the game
 
 `tools/stub_gmod.lua` is a fake GMod: Vector/Angle math, `timer`, `hook`, `net` (with real read/write
-type checking), `ents`, convars, particles, `EmitSound`/`render`/`surface` with **argument-order
-validation copied from the wiki's signatures**. `tools/smoke_test.lua` loads the addon into it twice —
-once as server, once as client — replays the server's net traffic into the client and steps a fake
-clock through both weapons' full timelines.
+type checking), `ents`, convars, `util.Effect`, and `render`/`surface`/`draw` stubs that fail on NaN or
+negative sizes, plus `EmitSound` validation copied from the wiki signatures.
 
 ```bash
 npm install                        # dev only, once (fengari + luaparse; the addon itself needs nothing)
-npm test                           # 32 checks: 100 zombies, 7000 fired, damage dealt, streaks drawn
-npm run lint                       # parse + symbol resolution
-
-node tools/lint_lua.js epic_sweps/lua     # every file parses as Lua 5.1
-node tools/lint_symbols.js epic_sweps     # every EpicSWEPs.<module>.<fn> a file calls is defined
+npm test                           # 49 checks: 100 zombies, 7000 fired, damage dealt, streaks drawn
+npm run lint                           # parse, symbols, globals, assets
 ```
 
-`lint_symbols.js` is the one that pays for itself: GMod resolves module fields at call time, so a typo
-(`Missiles.SpawnBarage`) is normally a runtime error for whoever pulls the trigger. It reads the files'
-`local U = EpicSWEPs.Util` aliases, so it checks the calls as they are actually written.
+The test loads the addon as the server, fires both weapons *through the SWEPs*, steps 470 frames of fake
+clock, reloads as a client, replays the server's captured net traffic through the real `net.Receive`, and
+steps the draw hooks. Then it walks the **cold paths** a timeline never touches: the spawnmenu settings
+panel (every control's cvar name is checked against the cvars that actually exist), `DrawHUD`, `Holster`,
+`OnDrop`, `Reload`, 300 queued HUD messages, every particle call with garbage input, level shutdown, and
+`Util`/`Net`/`Timeline` handed nils and zeros.
 
-It caught four real bugs while building this: a `net` framing mismatch between the two realms,
-`Entity:EmitSound` argument order (it is `name, level, pitch, volume, channel` — *not* the order most
-tutorials write), `ParticleEffect` having no quantity argument, and an O(n²) missile firing loop.
-`tools/run_smoke_test.js` also prints any engine method it had to invent — currently none, which is how
-we know there are no typo'd API names. Both scripts are plain node; `npm test` and `npm run lint` are the
-same commands.
+The four linters are `tools/lint_lua.js` (parses as Lua 5.1), `tools/lint_symbols.js` (every
+`EpicSWEPs.<module>.<fn>` read is defined, following the files' `local U = EpicSWEPs.Util` aliases),
+`tools/lint_globals.js` and `tools/lint_assets.js`. The globals linter is the one worth stealing: its
+whitelist is built by *running* the stub and dumping its environment, so "unknown global" means "an API
+our fake GMod has never heard of" — either a typo in the addon or a hole in the harness, and it found one
+of each. `lint_assets.js` checks the files GMod reads without complaining: soundscript syntax, and that
+every `.wav` and material named anywhere in the addon is actually shipped.
+
+Altogether the harness caught: a `net` framing mismatch between realms; `Entity:EmitSound`'s argument
+order (`name, level, pitch, volume, channel` — *not* the order most tutorials write); `ParticleEffect`
+having no quantity argument; an O(n²) firing loop that quietly dropped the last 27 missiles; the engine's
+`SNDLVL_*` names being **absent from GMod's Lua** (so `soundLevel` arrived as `nil`); `util.comma`, which
+GMod calls `string.Comma` — that one threw every single frame in `SWEP:DrawHUD`; and three soundscript
+format errors the engine would only have answered with silence.
+
+One lesson worth repeating: the stub must not be *nicer* than the game. It originally defined `SNDCHAN_*`
+and `SNDLVL_*` because the addon asked for them, which is exactly how wrong names stayed invisible. Those
+are gone from the harness now, and `EmitSound` rejects a nil sitting in the middle of its argument list
+the way the engine's argument binder does — while still allowing omitted trailing arguments, because in
+Lua those are the same thing as a default.
 
 ## What is and is not verified
 

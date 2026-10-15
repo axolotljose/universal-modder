@@ -48,6 +48,8 @@ end
 function M.SendState(id, data, ent)
 	if CLIENT then return end
 
+	data = data or {}	-- net.WriteTable(nil) is an error, and an empty frame beats a dead broadcast
+
 	net.Start(netStr)
 	net.WriteUInt(1, 1)	-- kind 1 = scene state
 	net.WriteString(id)

@@ -73,6 +73,20 @@ harness that runs both realms and asserts the behaviour, which caught four real 
 - **Lua effects are capped at 2048 per frame** (`util.Effect`); `PostDrawTranslucentRenderables` is the
   right place for `render.DrawBeam` / `render.DrawQuadEasy` / `DynamicLight`, and 2D stays in `HUDPaint`.
 - **Icons need no code.** GMod reads `materials/vgui/entities/<class>.<tga|png|jpg>` on its own.
+- **The engine's `SNDLVL_*` names are not in GMod's Lua at all.** The wiki's Enums/SNDLVL page says so
+  outright: "These enumerations are not provided in Garry's Mod Lua … use the raw number values instead"
+  (`SNDLVL_GUNFIRE` = 140, `SNDLVL_IDLE` = 60). `Enums/CHAN` by contrast *is* real (`CHAN_AUTO` 0,
+  `CHAN_WEAPON` 1, `CHAN_VOICE` 2, `CHAN_STATIC` 6), and the wiki pages live under `Enums/<NAME>`, not
+  per-constant, so a 404 on `wiki.facepunch.com/gmod/CHAN_AUTO` proves nothing - fetch `Enums/CHAN`.
+  Neither enum is worth depending on: name your own table of numbers inside the addon.
+- **Lua-side helper functions have no wiki pages.** `string.Comma`, `string.NiceTime`, `string.NiceSize`
+  are added by `garrysmod/lua/includes/extensions/string.lua`, which you can read straight off GitHub
+  (`gh api repos/Facepunch/garrysmod/contents/... --jq .content | base64 -d`). `util.comma` - the name
+  everybody writes from memory - does not exist, and the failure is a nil call every frame.
+- **Soundscript (.txt) syntax is the Source engine's, and it fails silently.** Key is `soundlevel`, not
+  `level` (that one is the Lua `sound.Add` spelling); several `wave` lines must be wrapped in `rndwave`,
+  or KeyValues keeps only the last; `channel` takes a `CHAN_*` name or -1..8, and `"channel" "1"` is
+  CHAN_WEAPON, not CHAN_STATIC. Random pitch is the comma form `"96,106"`, which *is* valid.
 - **Audio format is picky**: 16-bit, 11025/22050/44100 Hz. A 48 kHz or 32-bit wav simply does not play.
 - `CreateSound`-driven loops are client-side here, which is what we wanted for the siren/whistle (per
   listener, no networking), and `SetPlayTime`/`Stop` on the channel is the clean way to kill them when
@@ -106,10 +120,14 @@ the wiki signatures. It loads the addon as the server, fires both weapons *throu
 470 frames of fake clock, then reloads the addon as a client, replays the server's captured net traffic
 through the real `net.Receive` handler, and steps the draw hooks.
 
-32 checks, all green: exactly 100 zombies spawned and counted; `Sent == 7000` missiles launched; real
+49 checks, all green: exactly 100 zombies spawned and counted; `Sent == 7000` missiles launched; real
 `TakeDamageInfo` hits and `util.BlastDamage` explosions; the exact lines "7 THOUSAND F*CKING MISSILES"
 and "BLOW UP THIS MAN" broadcast, plus "100 ZOMBIE SPAWNER"; 30k streak sprites, text, dynamic lights
-and validated garnish effects drawn; zero unknown engine methods.
+and validated garnish effects drawn; zero unknown engine methods. A final "cold paths" phase runs what a
+timeline never reaches - the spawnmenu panel (each control's cvar name resolved against the cvars that
+exist), `SWEP:DrawHUD`/`Holster`/`OnDrop`/`Reload`, 300 queued announcements, every particle call with
+garbage input, level shutdown, and the helpers with nil/zero arguments. That phase is what found
+`util.comma` and the nil-radius crash, so it is the highest-value thing in the harness.
 
 **Not verified:** anything a running game would tell you — look, actual loudness and attenuation, frame
 time with 7000 streaks on a weak GPU, NPC behaviour under a non-Sandbox gamemode, whether PNG icons
@@ -135,7 +153,22 @@ import cleanly on every install.
 5. **`attempt to index a nil value (global 'EpicSWEPs')`.** **Cause:** modules under `lua/autorun`
    loaded in an unspecified order. **Fix:** one loader `include`s everything in an explicit order; each
    module also self-registers (`EpicSWEPs.Util = M`) so the order cannot strand a caller.
-6. **100 zombies spawn inside the floor / in the sky.** **Cause:** spawning at the trace point without a
+6. **Every sound call passes `nil` as its soundlevel and nothing complains.** **Cause:** the addon used
+   `SNDLVL_GUNFIRE`/`SNDCHAN_AUTO`; neither exists in GMod Lua (`SNDLVL_*` is engine-only, `SNDCHAN_*` was
+   invented outright), so the arguments were nil and the stub, which had *also* defined them, was happy.
+   **Fix:** the addon owns `Util.CHAN` / `Util.LVL` tables with the documented numbers, the stub deleted its
+   invented constants, and `EmitSound` now fails on a nil between two values the way the engine's binder
+   does. A harness that is more forgiving than the game is worse than no harness.
+7. **`attempt to call a nil value (field 'comma')`, once per frame, in `SWEP:DrawHUD`.** **Cause:**
+   `util.comma(count)` - GMod's is `string.Comma`, different table, capital C, and it is a Lua-side
+   extension with no wiki page. **Fix:** `string.Comma`. **Also:** the frame-by-frame nature was only
+   visible because the cold-path phase calls `DrawHUD` directly.
+8. **Explosions cut each other off; the soundscript's level did nothing.** **Cause:** `"channel" "1"` (that
+   is CHAN_WEAPON, one slot per entity) and a `"level"` key the engine does not read. **Fix:** `"channel"
+   "CHAN_STATIC"`, `"soundlevel" "SNDLVL_GUNFIRE"`, and the four variant lines wrapped in `rndwave` - as
+   plain siblings, KeyValues kept only the last one, so three of four explosion samples were dead.
+   `tools/lint_assets.js` now checks all of that, because the engine's only feedback is silence.
+9. **100 zombies spawn inside the floor / in the sky.** **Cause:** spawning at the trace point without a
    hull trace. **Fix:** `util.TraceHull` to the ground with a player-sized hull, then a small drop so
    they land with visible weight (and `MOVETYPE_NONE` on the breach entity so nobody poses with the box).
 

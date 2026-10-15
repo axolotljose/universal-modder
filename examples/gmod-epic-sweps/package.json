@@ -5,7 +5,7 @@
   "description": "Dev-only deps for the offline GMod harness. The addon itself needs nothing but Garry's Mod.",
   "scripts": {
     "test": "node tools/run_smoke_test.js",
-    "lint": "node tools/lint_lua.js epic_sweps/lua && node tools/lint_symbols.js epic_sweps"
+    "lint": "node tools/lint_lua.js epic_sweps/lua && node tools/lint_symbols.js epic_sweps && node tools/lint_globals.js epic_sweps && node tools/lint_assets.js epic_sweps"
   },
   "dependencies": {
     "fengari": "^0.1.5",

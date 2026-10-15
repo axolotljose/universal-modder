@@ -83,7 +83,7 @@ function ENT:PlayVoice(index)
 	local v = C.Voice.ZombieSpawner[index]
 	if not v then return end
 
-	EpicSWEPs.Util.PlaySound(self, v.file, v.vol or 1, SNDLVL_GUNFIRE)
+	EpicSWEPs.Util.PlaySound(self, v.file, v.vol or 1)
 	self:Announce(v.text, index == 1 and "subtitle" or "alert", 2.2)
 end
 
@@ -114,8 +114,8 @@ function ENT:StartEffects()
 	self:PlayVoice(1)
 
 	local S = C.Sounds.ZombieSpawner
-	EpicSWEPs.Util.PlaySound(self, EpicSWEPs.Util.PickSound(S.Open), 1, SNDLVL_GUNFIRE)
-	EpicSWEPs.Util.PlaySound(self, S.Hum, 0.6, SNDLVL_IDLE)
+	EpicSWEPs.Util.PlaySound(self, EpicSWEPs.Util.PickSound(S.Open), 1)
+	EpicSWEPs.Util.PlaySound(self, S.Hum, 0.6, EpicSWEPs.Util.LVL.IDLE)
 
 	self:Sync(true)
 end
@@ -134,7 +134,7 @@ function ENT:Think()
 		self:Announce("THE BOX IS OPEN", "alert", 1.6)
 		self:PlayVoice(2)
 
-		EpicSWEPs.Util.PlaySound(self, EpicSWEPs.Util.PickSound(C.Sounds.ZombieSpawner.Open), 1, SNDLVL_GUNFIRE)
+		EpicSWEPs.Util.PlaySound(self, EpicSWEPs.Util.PickSound(C.Sounds.ZombieSpawner.Open), 1)
 
 		local e = EffectData()
 		e:SetOrigin(self:GetPos())

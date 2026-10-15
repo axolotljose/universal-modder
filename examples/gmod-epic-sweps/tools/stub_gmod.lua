@@ -146,7 +146,11 @@ SWEP_BASE = {
 	TakePrimaryAmmo = function(self, n) self.clip = math.max(0, (self.clip or self.Primary.ClipSize) - n) end,
 	Clip1 = function(self) return self.clip or self.Primary.ClipSize end,
 	SetClip1 = function(self, v) self.clip = v end,
-	EmitSound = function(self, name, ch, pitch, vol) table.insert(api.state.soundCalls, { ent = "SWEP", sound = name }) end,
+	-- a Weapon is an Entity, so this is the same signature and the same validation
+	EmitSound = function(self, name, level, pitch, vol, channel, flags, dsp)
+		entityBase.EmitSound(self, name, level, pitch, vol, channel, flags, dsp)
+		table.insert(api.state.soundCalls, { ent = "SWEP", sound = name })
+	end,
 	GetViewModelPosition = function(self, p, a) return p, a end,
 	Primary = { ClipSize = -1, DefaultClip = -1, Automatic = false, Ammo = "none" },
 	Secondary = { ClipSize = -1, DefaultClip = -1, Automatic = false, Ammo = "none" }
@@ -221,18 +225,37 @@ function entityBase:Remove()
 	S.ents[self.index] = nil
 end
 -- Entity:EmitSound( name, soundLevel = 75, pitchPercent = 100, volume = 1, channel = CHAN_AUTO, ... )
-function entityBase:EmitSound(name, level, pitch, volume, channel)
+-- GMod's defaults only apply to arguments that are *absent*; a nil sitting between two values is a real
+-- "number expected, got nil" error, which is how a typo'd constant (SNDLVL_NOTREAL -> nil) shows up.
+local function checkNums(label, spec, ...)
+	-- NOT ipairs(args): a Lua table literal truncates at the first nil, which is exactly the case we are
+	-- here to catch. Take the values positionally instead.
+	local args = { ... }
+	local last = 0
+	for i = 1, #spec do if args[i] ~= nil then last = i end end
+	for i = 1, last do
+		local v, want = args[i], spec[i]
+		if v == nil then
+			error(label .. ": arg " .. (i + 1) .. " (" .. want.name .. ") is nil - a missing value, not a missing argument. Typo'd constant, or the wrong argument order?")
+		elseif type(v) ~= "number" then
+			error(label .. ": arg " .. (i + 1) .. " must be " .. want.name .. " (number), got " .. type(v))
+		elseif want.lo and (v < want.lo or v > want.hi) then
+			error(label .. ": arg " .. (i + 1) .. " is " .. want.name .. " (" .. want.lo .. "-" .. want.hi .. "), got " .. tostring(v) .. (want.hint and (" - " .. want.hint) or ""))
+		end
+	end
+end
+
+function entityBase:EmitSound(name, level, pitch, volume, channel, flags, dsp)
 	if type(name) ~= "string" then error("EmitSound: sound name must be a string") end
 	if string.match(name, "^%s") or string.match(name, "%s$") then error("EmitSound: no whitespace allowed in the sound name") end
-	if level ~= nil and (type(level) ~= "number" or level < 0 or level > 511) then
-		error("EmitSound: arg 2 is soundLevel (0-511), got " .. tostring(level) .. " - wrong argument order?")
-	end
-	if pitch ~= nil and (type(pitch) ~= "number" or pitch < 0 or pitch > 255) then
-		error("EmitSound: arg 3 is pitchPercent (0-255), got " .. tostring(pitch))
-	end
-	if volume ~= nil and (type(volume) ~= "number" or volume < 0 or volume > 1) then
-		error("EmitSound: arg 4 is volume (0-1), got " .. tostring(volume) .. " - wrong argument order?")
-	end
+	checkNums("Entity:EmitSound", {
+		{ name = "soundLevel", lo = 0, hi = 511, hint = "wrong argument order? it is name, level, pitch, volume, channel" },
+		{ name = "pitchPercent", lo = 0, hi = 255 },
+		{ name = "volume", lo = 0, hi = 1, hint = "wrong argument order? it is name, level, pitch, volume, channel" },
+		{ name = "channel" },
+		{ name = "soundFlags" },
+		{ name = "dsp" }
+	}, level, pitch, volume, channel, flags, dsp)
 	table.insert(S.soundCalls, { ent = self.index, sound = name, vol = volume, level = level })
 end
 function entityBase:NextThink(t) self.nextThink = t or S.time end
@@ -364,7 +387,25 @@ local function setup()
 		Concat = table.concat
 	}, { __index = table })
 
-	g.string = setmetatable({
+	-- GMod's own Lua adds this one (lua/includes/extensions/string.lua), so we do too - it is a real
+-- dependency of the missile SWEP's HUD and nil would only show up when someone actually looks at the gun
+local function commaSep(num, sep)
+	sep = sep or ","
+	local s = tostring(math.floor((num or 0) + 0.5))
+	local sign = ""
+	if string.sub(s, 1, 1) == "-" then sign, s = "-", string.sub(s, 2) end
+	local out, len = {}, #s
+	for i = 1, len do
+		out[#out + 1] = string.sub(s, i, i)
+		local rem = len - i
+		if rem > 0 and rem % 3 == 0 then out[#out + 1] = sep end
+	end
+	return sign .. table.concat(out)
+end
+
+g.string = setmetatable({
+		Comma = commaSep,
+		NiceTime = function(sec) return tostring(math.floor(sec or 0)) .. "s" end,
 		lower = string.lower,
 		find = string.find,
 		formatted = string.format,
@@ -698,13 +739,17 @@ local function setup()
 	end
 	-- EmitSound( name, position, entity = 0, channel, volume, soundLevel, flags, pitch )
 	g.EmitSound = function(name, pos, entity, channel, volume, level, flags, pitch)
+		if type(name) ~= "string" then error("EmitSound: arg 1 must be a sound name") end
 		if type(pos) ~= "table" then error("EmitSound: arg 2 must be a position Vector") end
 		if entity ~= nil and type(entity) ~= "number" then error("EmitSound: arg 3 is an entity index, got " .. type(entity)) end
-		if channel ~= nil and type(channel) ~= "number" then error("EmitSound: arg 4 is the channel") end
-		if volume ~= nil and (type(volume) ~= "number" or volume < 0 or volume > 1) then
-			error("EmitSound: arg 5 is volume (0-1), got " .. tostring(volume) .. " - wrong argument order?")
-		end
-		if level ~= nil and (type(level) ~= "number" or level > 511) then error("EmitSound: arg 6 is soundLevel") end
+		-- order per the wiki: name, position, entity, channel, volume, soundLevel, flags, pitch
+		checkNums("EmitSound", {
+			{ name = "channel" },
+			{ name = "volume", lo = 0, hi = 1 },
+			{ name = "soundLevel", lo = 0, hi = 511, hint = "this EmitSound is level 6th, but Entity:EmitSound has it 2nd" },
+			{ name = "soundFlags" },
+			{ name = "pitch", lo = 0, hi = 255 }
+		}, channel, volume, level, flags, pitch)
 		table.insert(S.soundCalls, { ent = "world", sound = name, vol = volume, level = level })
 	end
 
@@ -801,17 +846,18 @@ local function setup()
 	g.require = nil
 
 	-- constants the addon reads
+	-- Enums/CHAN is real GMod Lua; the engine's SNDLVL_* names are NOT (the wiki's own page says "use
+	-- the raw number values"), so they are deliberately absent here - if addon code references one it is
+	-- supposed to blow up like it does in the game, not be papered over by a stub constant.
 	local consts = {
-		SNDCHAN_AUTO = 0, SNDCHAN_WEAPON = 1, SNDCHAN_STATIC = 6, SNDCHAN_VOICE = 2,
-		SNDLVL_GUNFIRE = 100, SNDLVL_IDLE = 60, SNDLVL_STATIC = 66, SNDLVL_NORM = 66, SNDLVL_GTAV = 90,
-		SOUNDING_STOP_ALL = 1,
-		DMG_BULLET = 2, DAMAGE_BULLET = 2, DMG_CLUB = 1, DMG_SHOCK = 64, DMG_USEDARK = 0,
+		CHAN_AUTO = 0, CHAN_WEAPON = 1, CHAN_VOICE = 2, CHAN_STATIC = 6,
+		DMG_BULLET = 2, DAMAGE_BULLET = 2, DMG_CLUB = 1, DMG_SHOCK = 64,
 		MASK_SHOT = 34479, MASK_SHOT_HULL = 34479, MASK_VISIBLE = 16777216,
 		MOVETYPE_NONE = 0, MOVETYPE_VPHYSICS = 9, MOVETYPE_WALK = 3,
 		SOLID_NONE = 0, SOLID_BBOX = 2, SOLID_VPHYSICS = 7,
 		COLLISION_GROUP_DEBRIS = 6, COLLISION_GROUP_DEBRIS_TRIGGER = 7, COLLISION_GROUP_INTERACTIVE = 1,
 		OVERRIDE_USEALL = 2,
-		FCVAR_ARCHIVE = 1, FCVAR_REPLICATED = 32, FCVAR_NOTIFY = 4, FCVAR_USERINFO = 2,
+		FCVAR_NONE = 0, FCVAR_ARCHIVE = 128, FCVAR_REPLICATED = 8192, FCVAR_NOTIFY = 256, FCVAR_USERINFO = 512,
 		TEXT_ALIGN_LEFT = 0, TEXT_ALIGN_CENTER = 1, TEXT_ALIGN_RIGHT = 2, TEXT_ALIGN_TOP = 3, TEXT_ALIGN_BOTTOM = 4,
 		ACT_VM_DRAW = 1, ACT_VM_HITCENTER = 2, ACT_VM_MISSCENTER = 3,
 		SCHED_CHASE_ENEMY = 1002,

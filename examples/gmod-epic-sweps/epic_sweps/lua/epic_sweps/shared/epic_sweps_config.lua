@@ -102,13 +102,19 @@ cfg.Sounds = {
 	ZombieSpawner = {
 		Open = { "ambient/machines/thruster_start_loop1.wav" },
 		Spawn = { "npc/zombie/zombie_voice_idle1.wav", "npc/zombie/zombie_voice_idle5.wav", "npc/zombie/zombie_die.wav" },
-		Hum = "ambient/energy/warning1.wav"
+		-- our own generated hum (faded at both ends by tools/make_sfx.py, so it loops without a seam);
+		-- Valve's ambient/energy/warning1.wav is the fallback if you would rather not ship a file
+		Hum = "epic_sweps/portal_hum.wav"
 	},
 	MissileBarrage = {
 		Siren = "epic_sweps/siren.wav",
 		Whistle = "epic_sweps/whine.wav",
 		Launch = "epic_sweps/launch.wav",
-		Explosion = "epic_sweps/explosion.wav",
+		-- a list, not one file: PickSound chooses per impact. The soundscript in scripts/ would do this
+		-- too, but a script's own volume/pitch override whatever EmitSound passes, and the client ramp
+		-- scales volume by distance to the crater - so the .wav paths are what has to be played here.
+		Explosion = { "epic_sweps/explosion.wav", "epic_sweps/explosion_1.wav",
+			"epic_sweps/explosion_2.wav", "epic_sweps/explosion_3.wav" },
 		Boom = { "ambient/explosions/explode_1.wav", "ambient/explosions/explode_3.wav", "ambient/explosions/explode_6.wav" },
 		Alarm = { "ambient/alarm/alarm_beeper.wav" }
 	}
@@ -133,9 +139,9 @@ cfg.ParticleClientCommands = {
 -- CONSOLE COMMANDS / CVARS ------------------------------------------------
 -- These are created for you; default values live here.
 cfg.CVars = {
-	epic_zombies_count = { default = 100, min = 1, max = 1000, help = "Zombies spawned per box (0 uses the config value)" },
+	epic_zombies_count = { default = 100, min = 1, max = 1000, replicate = true, help = "Zombies spawned per box" },
 	epic_zombies_instant = { default = 0, min = 0, max = 1, help = "1 = skip the waves, dump all 100 at once" },
-	epic_missiles_count = { default = 7000, min = 100, max = 20000, help = "Missiles per barrage" },
+	epic_missiles_count = { default = 7000, min = 100, max = 20000, replicate = true, help = "Missiles per barrage" },
 	epic_show_text = { default = 1, min = 0, max = 1, help = "0 = hide the big on-screen text" },
 	epic_play_voice = { default = 1, min = 0, max = 1, help = "0 = mute the voice lines" },
 	epic_screen_shake = { default = 1, min = 0, max = 1, help = "0 = no screen shake" }

@@ -67,7 +67,7 @@ function SWEP:Deploy()
 	self:SendWeaponAnim(ACT_VM_DRAW)
 
 	if SERVER and IsFirstTimePredicted() then
-		EpicSWEPs.Util.PlaySound(self:GetOwner(), "weapons/grenade_draw1.wav", 0.5, SNDLVL_IDLE)
+		EpicSWEPs.Util.PlaySound(self:GetOwner(), "weapons/grenade_draw1.wav", 0.5, EpicSWEPs.Util.LVL.IDLE)
 	end
 
 	return true

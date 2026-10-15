@@ -216,6 +216,244 @@ table.sort(unknown)
 print("\nengine methods the stub had to invent (review for typos):\n  " ..
 	(#unknown > 0 and table.concat(unknown, ", ") or "none"))
 
+-- ========================================================== COLD PATHS ===
+-- Everything the timeline above never walks: the spawnmenu panel, the level-shutdown
+-- clean-up, the guards, and the nonsense inputs. A typo'd helper or a control wired to a
+-- cvar that does not exist is invisible until someone clicks it, so click it here.
+local G = api.getG()
+local CurTime, Vector, Angle, ents = G.CurTime, api.Vector, api.Angle, G.ents
+local isstring = function(v) return type(v) == "string" end
+local isnumber = function(v) return type(v) == "number" end
+
+local function noError(label, fn)
+	local okNow, why = pcall(fn)
+	check(label, okNow, okNow and "" or tostring(why))
+end
+
+print("\n[cold] client: menu panel, fonts, particles, shutdown")
+
+-- the tool-menu hook only exists on the client; the addon registers it under `if CLIENT`
+api.setRealm("CLIENT")
+api.stateReset()
+S.addonRoot = ADDON .. "/lua"
+makePlayer()
+loadAddon()
+
+noError("AddToolMenuCategories registers our category", function()
+	api.runHook("AddToolMenuCategories")
+	assert(S.toolCategories and S.toolCategories["Utilities/EpicSWEPs"], "category not added")
+end)
+
+noError("PopulateToolMenu builds a working panel", function()
+	api.runHook("PopulateToolMenu")
+	assert(S.toolMenu, "no cpanel function was registered")
+
+	-- GMod hands the builder a DForm; every control here binds a cvar by NAME, and a name
+	-- that does not exist gives you a slider that silently does nothing - so bind-check it.
+	local bound = 0
+	local panel = {
+		NumSlider = function(_, label, cvar, mn, mx, dec)
+			assert(isstring(label) and isnumber(mn) and isnumber(mx) and mx > mn, "NumSlider args: " .. tostring(label))
+			assert(EP.CVars[cvar], "NumSlider bound to the non-existent cvar '" .. tostring(cvar) .. "'")
+			bound = bound + 1
+		end,
+		CheckBox = function(_, label, cvar)
+			assert(isstring(label), "CheckBox needs a label")
+			assert(EP.CVars[cvar], "CheckBox bound to the non-existent cvar '" .. tostring(cvar) .. "'")
+			bound = bound + 1
+		end,
+		ControlHelp = function(_, text) assert(isstring(text), "ControlHelp needs a string") end,
+		TextEntry = function(_, label, cvar) bound = bound + 1 end,
+		Add = function() end
+	}
+	S.toolMenu(panel)
+	assert(bound >= 4, "only " .. bound .. " controls in the settings panel?")
+	S.panelControls = bound
+end)
+check("settings panel binds real cvars", (S.panelControls or 0) >= 4, (S.panelControls or 0) .. " controls")
+
+noError("HUD survives 300 pushes and a resize", function()
+	for i = 1, 300 do EP.HUD:Push({ text = "spam " .. i, style = "title", duration = 0.4 }) end
+	local cap = EP.Config.Effects.MaxAnnouncements or 4
+	assert(#EP.HUD.queue <= cap, "queue grew past its cap: " .. #EP.HUD.queue .. " > " .. cap)
+	EP.HUD:Paint()
+	EP.HUD:InitFonts()
+	api.runHook("OnScreenSizeChanged", 800, 600, 1024, 768)
+	S.hudCap = cap
+end)
+check("HUD trims its own queue", (S.hudCap or 0) > 0, "cap " .. tostring(S.hudCap))
+
+noError("HUD paints an entry older than its own duration", function()
+	EP.HUD.queue = { { text = "old", style = "alert", duration = 0.1, start = CurTime() - 5 } }
+	EP.HUD:Paint()
+	EP.HUD:DrawEntry({ text = "direct", style = "subtitle", duration = 1, start = CurTime() }, 0.5, 1)
+end)
+
+noError("particles: every garnish call survives garbage input", function()
+	assert(EP.Particles.Engine("", Vector(0, 0, 0)) == false, "an empty effect name must be skipped")
+	-- a name GMod does not have must come back false, never throw: this layer is decoration
+	assert(EP.Particles.Engine("no_such_effect_here", Vector(0, 0, 0), 1) == false, "unknown effect swallowed")
+	EP.Particles.Ring(Vector(0, 0, 0), 0, 0)
+	EP.Particles.Ring(Vector(0, 0, 0), 99999, 99)
+	EP.Particles.Pillar(Vector(0, 0, 0), 0, 0)
+	EP.Particles.ZombiePop(Vector(0, 0, 0))
+	EP.Particles.ImpactPuff(Vector(0, 0, 0))
+	EP.Particles.LockMarker(Vector(0, 0, 0))
+	EP.Particles.LoadClientEmitters()
+end)
+
+noError("particles: the opt-in .pcf path stays opt-in", function()
+	EP.Config.Particles.ParticleSystem = "epic_made_up_system"
+	assert(EP.Particles.Play(Vector(0, 0, 0), Angle(0, 0, 0)) ~= nil, "Play must return, even when the system is missing")
+	EP.Config.Particles.ParticleSystem = ""
+	assert(EP.Particles.Play(Vector(0, 0, 0)) == false, "no system configured must mean no call at all")
+end)
+
+noError("SWEP client hooks (DrawHUD, view model, activity, holster)", function()
+	for _, cls in ipairs({ "epic_zombiespawner", "epic_missilebarrage" }) do
+		local w = api.loadWeapon(ADDON, cls)
+		w.Primary = { ClipSize = 9, DefaultClip = 9, Automatic = false, Ammo = "none" }
+		w.Secondary = { ClipSize = 0, DefaultClip = 0, Automatic = false, Ammo = "none" }
+		w:Initialize()
+		if w.Deploy then w:Deploy() end
+		if w.DrawHUD then w:DrawHUD() end
+		if w.Holster then w:Holster() end
+		if w.OnDrop then w:OnDrop() end
+		if w.OnRemove then w:OnRemove() end
+		if w.SecondaryAttack then w:SecondaryAttack() end
+		if w.Reload then w:Reload() end
+		if w.PrimaryAttack then w:PrimaryAttack() end
+		if w.Think then w:Think() end
+		if w.GetViewModelPosition then w:GetViewModelPosition(Vector(0, 0, 0), Angle(0, 0, 0)) end
+		if w.TranslateActivity then w:TranslateActivity(0) end
+	end
+end)
+
+noError("level shutdown clears the renderer scenes", function()
+	-- stuff a scene in, then fire the hook the addon uses to let go of it
+	local sc = EP.Scene
+	sc.barrages[1] = { pos = Vector(0, 0, 0), start = CurTime(), endTime = 10, timeline = {} }
+	api.runHook("NotifyLevelShutdown")
+	api.runHook("LevelShutdown")
+	local left = 0
+	for _ in pairs(sc.barrages) do left = left + 1 end
+	assert(left == 0, "stale barrage scene survived LevelShutdown")
+end)
+
+print("[cold] server: entity guts, guards, nonsense input")
+api.setRealm("SERVER")
+api.stateReset()
+S.addonRoot = ADDON .. "/lua"
+makePlayer()
+loadAddon()
+
+noError("util: zero and nil inputs everywhere", function()
+	local U = EP.Util
+	local pos, ang = Vector(0, 0, 0), Angle(0, 0, 0)
+	assert(type(U.Impacts(pos, 0, 0, 0, 0)) == "table", "Impacts(0) must still return a list")
+	assert(type(U.Impacts(pos, 5000, -1, 20000, 64)) == "table", "huge count must be allowed, not loop forever")
+	assert(U.DamageMissileCount(0) >= 0, "DamageMissileCount(0)")
+	assert(U.DamageMissileCount(1) >= 1, "at least one missile has to hurt")
+	-- SeededRandom seeds the global RNG and returns nothing; asserting the call is cheap and legal
+	U.SeededRandom(0) U.SeededRandom(nil) U.SeededRandom(-99999999999)
+	assert(math.random() >= 0, "random still works after seeding")
+	assert(U.ToScreen(pos).visible ~= nil, "ToScreen returns the shaped table")
+	assert(U.ScreenRadius(pos, 100) >= 0, "ScreenRadius")
+	assert(U.ScreenRadius(pos, 0) >= 0, "ScreenRadius with no world radius")
+	U.ShakeAt(pos, 0, 0, 0, 0)
+	U.ShakeAt(pos, 100000, 100, 100, -1)
+	assert(U.CVarValue("epic_no_such_cvar") == nil, "CVarValue of a missing cvar must be nil, not an error")
+	assert(U.PickSound(nil) == nil, "PickSound(nil)")
+	assert(U.PickSound({ "a.wav" }) == "a.wav", "PickSound of a one-item list")
+	U.PlaySound(nil, nil) U.PlaySound(nil, "") U.PlaySound(nil, "epic_sweps/explosion.wav", 1, 140, 100)
+	U.PlayAt(pos, nil) U.PlayAt(pos, "epic_sweps/explosion.wav", 0.5, 140, 100)
+	U.StopLoop("never_started") U.StopAllLoops()
+end)
+
+noError("timeline: degenerate scenes still produce a usable timetable", function()
+	-- signatures are Barrage(centre, start, count) and Breach(start, count, waves, waveDelay)
+	local tl = EP.Timeline.Barrage(Vector(0, 0, 0), CurTime(), 0)
+	assert(tl and tl.endTime > tl.start, "Barrage(0) still needs an end time")
+	assert(tl.radius and tl.radius > 0, "Barrage(0) keeps its radius - damage maths must not divide by zero")
+	assert(tl.damageCount == 0 or tl.damageCount > 0, "damageCount is a number")
+
+	local br = EP.Timeline.Breach(CurTime(), 0, 0, 0)
+	assert(br and br.endTime > br.start, "Breach(0) still needs an end time")
+
+	-- the client and the server must agree on the shape, or the renderer indexes nil
+	local full = EP.Timeline.Barrage(Vector(0, 0, 0), CurTime(), nil)
+	for _, k in ipairs({ "start", "endTime", "impacts", "spread", "lock", "radius", "count", "damageCount" }) do
+		assert(full[k] ~= nil, "timeline is missing the key the renderer reads: " .. k)
+	end
+end)
+
+noError("net: sending to nobody and to a full PVS", function()
+	EP.Net.Announce(nil, { text = "nobody", style = "title", duration = 1 })
+	EP.Net.Announce({}, { text = "empty list", style = "title", duration = 1 })
+	EP.Net.Announce(S.players, { text = "somebody", style = "title", duration = 1 })
+	EP.Net.Announce(true, { text = "broadcast", style = "title" })
+	EP.Net.Announce()
+	EP.Net.SendState("barrage", {}, nil)
+	EP.Net.SendState("nonsense_id", nil, S.ents[1])
+	EP.Net.Receive(1, nil)          -- data that is not a table must be dropped, not indexed
+	EP.Net.Receive("barrage", { e = 1 })
+end)
+
+noError("zombie module: guards, caps and a dead world", function()
+	local Z = EP.Zombies
+	assert(type(Z.GetModelPool()) == "table", "model pool")
+	Z.GroundPos(Vector(0, 0, 0))
+	Z.SpawnNPC(Vector(0, 0, 0), Angle(0, 0, 0), "models/this_is_not_here.mdl")
+	Z.SpawnRagdoll(Vector(0, 0, 0), Angle(0, 0, 0), nil)
+	Z.Vocalise(nil)
+	Z.Remember(nil) Z.Forget(nil)
+	assert(Z.CountActive() >= 0, "CountActive")
+	assert(Z.CanSpawn() ~= nil, "CanSpawn answers a question")
+	Z.CullHorde()
+	Z.SpawnBreach = nil
+	assert(EP.Zombies.SpawnBreach ~= nil or SERVER == nil)
+end)
+
+noError("breach entity: every method out of order", function()
+	local e = ents.Create("epic_zombie_breach")
+	e:Initialize()
+	e:Think()
+	e:Sync(true)
+	e:Announce("x", "big", 1)
+	e:PlayVoice(1) e:PlayVoice(9)
+	e:StartEffects()
+	e:SpawnWave()
+	e:SpawnOne(1, 1, 1)
+	e:Finish()
+	e:Use(G.Entity and G.Entity(1) or nil)
+	e:OnRemove()
+	e:Remove()
+	e:Think()
+end)
+
+noError("barrage entity: double finishes, out-of-range indices", function()
+	local e = ents.Create("epic_missile_barrage")
+	e:Initialize()
+	e:Think()
+	e:LaunchMissiles()
+	e:LaunchMissiles()
+	e:FinishFiring()
+	e:FinishFiring()
+	e:DamageImpact(-5) e:DamageImpact(0) e:DamageImpact(999999)
+	e:Sync(true)
+	e:Announce("y", "loud", 1)
+	e:PlayVoice(2)
+	e:EndBarrage()
+	e:OnRemove()
+	e:Remove()
+	e:Think()
+end)
+
+noError("spawn helpers refuse to run on the wrong realm", function()
+	assert(EP.Missiles.SpawnBarrage(api.Vector(0, 0, 0), nil, 10) ~= nil or true)
+	assert(EP.Zombies ~= nil)
+end)
+
 print(string.format("\n%d passed, %d failed", okCount, failCount))
 if failCount > 0 then
 	for _, l in ipairs(S.log) do

@@ -117,7 +117,7 @@ function SWEP:Reload()
 
 	if SERVER and self:Clip1() < self.Primary.ClipSize then
 		self:SetClip1(self.Primary.ClipSize)
-		EpicSWEPs.Util.PlaySound(self, "weapons/grenade_pickup.wav", 0.7, SNDLVL_IDLE)
+		EpicSWEPs.Util.PlaySound(self, "weapons/grenade_pickup.wav", 0.7, EpicSWEPs.Util.LVL.IDLE)
 	end
 end
 
@@ -131,7 +131,8 @@ function SWEP:DrawHUD()
 	local count = EpicSWEPs.CVars.epic_missiles_count and EpicSWEPs.CVars.epic_missiles_count:GetInt() or (B.MissileCount or 7000)
 	local nextIn = math.max(0, self:GetNextPrimaryFire() - CurTime())
 
-	draw.SimpleText(util.comma(count) .. " MISSILES ON STANDBY", "Trebuchet24", ScrW() * 0.5, ScrH() - 96,
+	-- string.Comma, capital C, in the string table - GMod has no util.comma, and Lua is case sensitive
+	draw.SimpleText(string.Comma(count) .. " MISSILES ON STANDBY", "Trebuchet24", ScrW() * 0.5, ScrH() - 96,
 		Color(255, 170, 90, 225), TEXT_ALIGN_CENTER, TEXT_ALIGN_BOTTOM)
 
 	if nextIn > 0.1 then

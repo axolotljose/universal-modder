@@ -95,3 +95,31 @@ to be anchored to a whole statement, or the tool cries wolf and gets ignored.
 Never booted in the real game. Open: how loud the attenuated explosions actually are, whether the icons
 show (PNG auto-import is documented but TGA is the safe path), how the horde behaves on non-Sandbox
 gamemodes, and frame time with 7000 streaks on a weak GPU (`MaxMissilesDrawn` is the dial).
+
+## 2026-10-15 (later) — "double check the lua, I think there are errors"
+
+There were. Not in the parse sense (`ALL 15 LUA FILES PARSE` was already true) — in the "runs until
+somebody looks at the gun" sense. Two new static checks plus a cold-path phase in the smoke test:
+
+- `tools/lint_globals.js` dumps the *stub's own environment* and diffs every global the addon reads
+  against it. It reported `CHAN_AUTO`/`CHAN_VOICE` as unmodelled, which sent me to the wiki, which said
+  the `SNDLVL_*` enum is **not in GMod's Lua at all** ("use the raw number values"). The addon was passing
+  `SNDLVL_GUNFIRE` (→ nil) into `EmitSound` as the soundlevel, and `SNDCHAN_AUTO` (a name invented in this
+  repo, never in GMod) as the channel. The stub had *defined both*, which is why 32/32 was green: my
+  harness was more generous than the game. Constants now live in `Util.CHAN`/`Util.LVL` with the wiki's
+  numbers, the invented ones are deleted from the stub, and `EmitSound` rejects a nil between two values.
+- Cold-path phase → `util.comma(count)` in `SWEP:DrawHUD`. Real name is `string.Comma` (found by reading
+  `garrysmod/lua/includes/extensions/string.lua` off GitHub, since Lua-side helpers have no wiki page).
+  It would have thrown once per frame, on the client, at the one moment the player is definitely looking.
+- Same phase → `EpicSWEPs.Util.Impacts(centre, nil, ...)` from a partial state message: nil arithmetic
+  inside `HUDPaint`. Now the renderer waits for pos+radius+start before computing, and `Impacts` refuses
+  to do maths on missing inputs.
+- `tools/lint_assets.js` → the soundscript had `"level"` instead of `"soundlevel"`, four sibling `wave`
+  lines with no `rndwave` wrapper (KeyValues keeps the last), and `"channel" "1"`, which is CHAN_WEAPON,
+  not CHAN_STATIC. Fixed all three; the comma pitch form `"96,106"` turned out to be legal after all, which
+  is why every claim here cites the file or page it came from.
+- Also dropped `FCVAR_REPLICATED` from the three presentation toggles: replicated + archived means the
+  server rewrites your saved `epic_show_text 0` on every connect.
+
+49/49 green, four linters clean, `npm run lint` now runs all of them. The reusable lesson is in the field
+note under "a harness that is more forgiving than the game is worse than no harness".

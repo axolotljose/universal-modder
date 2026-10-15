@@ -9,9 +9,13 @@ for name, def in pairs(C.CVars or {}) do
 		def = { default = def }
 	end
 
+	-- ARCHIVE keeps a value between sessions. FCVAR_REPLICATED (server side only) additionally makes the
+	-- server's value law on every client, which is what we want for the two counts - the HUD has to show
+	-- what the server is actually spawning - and deliberately NOT for the presentation toggles, because a
+	-- replicated+archived cvar overwrites the player's own saved choice on every connect.
 	local flags = FCVAR_ARCHIVE
 
-	if SERVER then
+	if SERVER and def.replicate then
 		flags = flags + FCVAR_REPLICATED
 	end
 
@@ -56,7 +60,14 @@ end
 if CLIENT then
 	local function stopLoops()
 		EpicSWEPs.Util.StopAllLoops()
-		EpicSWEPs.Barrages = {}
+
+		-- the renderer keeps the live scenes in EpicSWEPs.Scene (its module-level table is the same one),
+		-- and both die with the map, so empty them instead of leaving 7000 stale impact lists around
+		local sc = EpicSWEPs.Scene
+		if sc then
+			sc.barrages = {}
+			sc.breaches = {}
+		end
 	end
 
 	hook.Add("NotifyLevelShutdown", "EpicSWEPs.Loops", stopLoops)
