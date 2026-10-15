@@ -26,7 +26,7 @@ tags: ["coop", "split-screen", "code-cave", "mips", "pine", "pcsx2", "emulator",
 > re-applies the state the engine keeps overwriting -- and, where state is not
 > enough, **calls the game's own functions** (a write can set `actor_count`, it
 > cannot construct a second actor). The mod's code is finished and
-> tested (276 tests, including the machine code executing in an R5900 interpreter),
+> tested (293 tests, including the machine code executing in an R5900 interpreter),
 > but **nobody has found the addresses on real hardware yet** -- that is the one
 > step left, and `docs/DISCOVERY.md` in the example folder is the procedure.
 >
@@ -251,9 +251,10 @@ python -m aecoops export-pnach --out cheats/<CRC>.pnach
    that matters and the one a policy test cannot make.
 
 `python -m aecoops selfcheck` runs the same checks on a user's machine in one
-command (114 of them, including that the call region does not overlap the write
-list and that every `docs/DISCOVERY.md#key` a message prints still resolves to a
-section); the suite is 276 tests in about 30 seconds.
+command (123 of them, including that the call region does not overlap the write
+list, that every `docs/DISCOVERY.md#key` a message prints still resolves to a
+section, and that the pasteable bundle carries no game bytes); the suite is 293
+tests in about 30 seconds.
 
 **What was NOT verified.** Everything about the actual game:
 
@@ -428,6 +429,24 @@ of one region. None of them is a per-frame `jal`, an actor table, a view mode or
 struct offset. Those are properties of a running machine, which is why the project
 ships recipes and refuses to guess -- and why the work went into shortening the
 measuring (`discover try`) instead of hunting for a number to copy.
+
+## Measuring from a phone (and the limit that is real)
+
+Worth writing down for the next mod that needs measurements only the user's machine
+can produce: the tool speaks PINE, which is a **local** IPC channel (TCP `127.0.0.1`
+on Windows, a unix socket elsewhere), and **Android PS2 emulators do not implement
+it at all**. So a phone-only setup -- game running on the phone -- cannot be hooked by
+this route; the game has to be in PCSX2 on a computer.
+
+Two arrangements work. The ordinary one: the computer runs everything and the phone
+is only the conversation, which is why `aecoops share` exists -- one 3 KB ASCII
+bundle (worksheet state, disc metadata, install state) whose stdout *is* the payload,
+plus `aecoops set --file` to apply a batch of measurements in one command coming back.
+The clever one: Termux on Android plus `adb forward tcp:28011 tcp:28011` tunnels the
+phone's localhost to the computer's over USB, so the tool runs on the phone and
+reaches PCSX2 through the cable. Setup-heavy, and worth it for `discover try`
+specifically, because that command asks a question whose answer is on the emulator's
+screen.
 
 ## Open questions
 

@@ -101,6 +101,18 @@ decomp can take billions of tokens.
     stops, what happens to a candidate that cannot be tried, whether each poke is really
     undone before the next -- becomes assertable. Print every candidate as it is tried, not
     just the winner, so a redirected log is the record of what was ruled out.
+  - **The person measuring is often not at the machine measuring.** Anything that needs
+    a running emulator to measure also needs the measurement to travel: to a chat, to a
+    phone, to whoever is helping. Build the hand-off and make it *structural* -- a
+    command whose whole stdout is one small ASCII payload, built only from your
+    worksheet and the emulator's metadata (serial, title, CRC, run state), so there is
+    no code path that could put a game file, a savestate or a decompiled listing into
+    it. Summarise anything sensitive as a count (a patch journal becomes "3 writes at
+    <addr>", never its bytes), wrap lines to phone width, keep it under a few
+    kilobytes, and provide the reverse direction too (`set --file` to apply a batch of
+    measurements in one command). One more hard limit worth stating up front: IPC APIs
+    like PCSX2's PINE bind to localhost only and have no Android equivalent, so a
+    phone-only setup cannot be hooked -- the game must run on a desktop emulator.
   - **Gate every optional write on a measured address.** A mod that pokes state the engine
     owns (HUD placement, camera targets, viewport count) should degrade mode by mode -- and
     say which field it is waiting on -- rather than guessing a plausible number. Guessing

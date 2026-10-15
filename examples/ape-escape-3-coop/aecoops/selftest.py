@@ -21,8 +21,11 @@ Checked here:
 9. the call region does not overlap the write list, and a call is made once, with
    its argument, and is consumed;
 10. every `docs/DISCOVERY.md#key` pointer the tool or the worksheet prints still
-   resolves to a section of the recipe, which is a promise a message makes every
-   time it says "here is how to measure this".
+    resolves to a section of the recipe, which is a promise a message makes every
+    time it says "here is how to measure this";
+11. the bundle `aecoops share` prints is one paste, plain ASCII, and carries no
+    game bytes -- it is the thing that crosses from the machine running the game to
+    wherever the conversation is.
 """
 
 from __future__ import annotations
@@ -526,6 +529,36 @@ def doc_pointer_problems(root: Path | None = None) -> list[str]:
     return problems
 
 
+def check_share(c: Checker) -> None:
+    """The pasteable bundle: small, plain, and incapable of carrying game data."""
+    c.section("the measurement bundle")
+    from . import share
+
+    table = AddressTable.load()
+    bundle = share.build_bundle(table)
+    c.check(
+        f"it is one paste (under {share.COMFORTABLE_BYTES} bytes)",
+        bundle.size < share.COMFORTABLE_BYTES,
+        f"{bundle.size} bytes",
+    )
+    c.check("it is plain ASCII", share.ascii_only(bundle.text) == bundle.text)
+    c.check("no line runs off a phone screen", max(len(line) for line in bundle.text.splitlines()) < 200)
+    c.check("it names every blank", "still to find:" in bundle.text and len(bundle.unresolved) == 32)
+    c.check("it says whether the emulator answered", "disc" in bundle.text and "install" in bundle.text)
+    c.check(
+        "it carries no instruction stream (a journal is a count, not its bytes)",
+        all(len(token) <= 12 for token in bundle.text.split() if token.startswith("0x")),
+    )
+    measured = AddressTable.load()
+    measured.globals["frame_hook"].addr = 0x00123450
+    measured.globals["frame_hook"].verified = "2026-10-15"
+    shown = share.build_bundle(measured)
+    c.check("a measured address is shown", "0x00123450" in shown.text)
+    c.check("...and drops off the blank list", "frame_hook," not in ", ".join(shown.unresolved) + ",")
+    full = share.build_bundle(table, full=True)
+    c.check("--full stays pasteable too", full.size < 32 * 1024, f"{full.size} bytes")
+
+
 def check_pointers(c: Checker) -> None:
     """The recipe pointers: every message that says "here is how" is right."""
     c.section("recipe pointers")
@@ -571,5 +604,6 @@ def run_all(verbose: bool = False) -> int:
     check_views(c)
     check_calls(c)
     check_pointers(c)
+    check_share(c)
     print(f"\n{c.passed} passed, {c.failed} failed")
     return 0 if c.failed == 0 else 1

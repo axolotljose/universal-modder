@@ -24,7 +24,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import cave, discover, hud, mips, pnach, views
+from . import cave, discover, hud, mips, pnach, share, views
 from .addresses import AddressTable, DEFAULT_TABLE, TableError
 from .coop import CoopConfig, CoopMod, Split, character_from
 from .hud import HudMode, Screen
@@ -88,6 +88,72 @@ def cmd_doctor(args) -> int:
         print("  `aecoops revert` will put those bytes back")
     else:
         print(f"journal: none at {JOURNAL} (nothing installed yet)")
+    return 0
+
+
+def cmd_share(args) -> int:
+    """Print one small text bundle: the worksheet, the disc, what is installed.
+
+    The numbers can only be measured on the machine the game runs on, and the
+    conversation about them often happens somewhere else -- a phone, a chat, a thread.
+    This is the thing to paste: everything a helper needs (which entries are blank,
+    which are measured, what disc, what is installed), and by construction nothing
+    that should not circulate. Its whole stdout *is* the payload, so a copy of the
+    terminal output is the message.
+    """
+    table = _table(args)
+    disc = share.Disc(note="PINE not asked for (--disc to try)")
+    if not args.table_only:
+        try:
+            with _pine(args) as pine:
+                info = pine.info()
+                disc = share.Disc(
+                    title=info.title or "",
+                    serial=info.serial or "",
+                    crc=info.uuid or "",
+                    state=str(pine.status()),
+                )
+        except (PineNotRunning, PineError, PineUnusable) as exc:
+            disc = share.Disc(note=f"PINE not reachable ({exc})")
+
+    install = share.Install()
+    if JOURNAL.exists():
+        try:
+            payload = json.loads(JOURNAL.read_text())
+            # Count and address only: a journal's payload is original instruction
+            # bytes, which is game code, and has no business in a chat window.
+            install = share.Install(
+                journal_writes=len(payload.get("entries", [])),
+                journal_at=str(JOURNAL),
+            )
+        except (OSError, ValueError):
+            install = share.Install(note=f"a journal exists at {JOURNAL} but could not be read")
+    elif args.cave:
+        install = share.Install(cave=int(args.cave, 0), site=_int_or_none(args.site))
+
+    extras: list[tuple[str, str]] = []
+    for path in args.extra or []:
+        text = Path(path).read_text(errors="replace")
+        if len(text) > args.extra_chars:
+            dropped = len(text) - args.extra_chars
+            text = text[: args.extra_chars] + f"\n... {dropped} more characters not shown"
+        extras.append((Path(path).name, text))
+
+    bundle = share.build_bundle(table, disc=disc, install=install, extras=extras, full=args.full)
+    text = share.ascii_only(bundle.text)
+    if args.out:
+        target = Path(args.out)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="ascii")
+        print(f"wrote {target} ({bundle.size} bytes, {len(bundle.unresolved)} entries still blank)")
+        print("  open it, copy the whole thing, and paste it where you are asking for help")
+        return 0
+    print(text, end="")
+    if bundle.size > share.COMFORTABLE_BYTES:
+        print(
+            f"  ! that bundle is {bundle.size} bytes; consider --table-only or a shorter --extra",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -666,17 +732,35 @@ def cmd_export_pnach(args) -> int:
 
 
 def cmd_set(args) -> int:
-    """Write a measurement into the address worksheet.
+    """Write measurements into the address worksheet.
 
     Values are parsed as ints (decimal or ``0x`` hex), strings stay strings, so
     ``aecoops set globals.frame_hook.verified=2026-10-15`` records a date and
-    ``aecoops set characters.kei=0`` records a number.
+    ``aecoops set characters.kei=0`` records a number. ``--file`` reads the same
+    ``PATH=VALUE`` lines from a file, which is how a batch of measurements someone
+    sent you gets applied in one command instead of one command each.
     """
     table = _table(args)
-    for assignment in args.assignments:
+    assignments = list(args.assignments)
+    if args.file:
+        try:
+            lines = Path(args.file).read_text().splitlines()
+        except OSError as exc:
+            return _fail(f"could not read {args.file}: {exc}")
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            assignments.append(stripped)
+    if not assignments:
+        return _fail("nothing to set: pass PATH=VALUE pairs, or --file with PATH=VALUE lines")
+    for assignment in assignments:
         if "=" not in assignment:
             return _fail(f"{assignment!r} is not PATH=VALUE")
         path, raw = assignment.split("=", 1)
+        # Whitespace around the value is the writer's, not the measurement's: a file
+        # of `key = value` lines is how a batch arrives, and " 2026-10-15" is not a date.
+        raw = raw.strip()
         try:
             value: object = int(raw, 0)
         except ValueError:
@@ -927,8 +1011,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_export_pnach)
 
     p = sub.add_parser("set", help="record a measurement in the address worksheet")
-    p.add_argument("assignments", nargs="+", metavar="PATH=VALUE")
+    p.add_argument("assignments", nargs="*", metavar="PATH=VALUE")
+    p.add_argument(
+        "--file",
+        default=None,
+        help="read PATH=VALUE lines from a file (blank lines and # comments ignored)",
+    )
     p.set_defaults(func=cmd_set)
+
+    p = sub.add_parser(
+        "share",
+        help="print one small text bundle of what is measured and what is not (safe to paste)",
+    )
+    p.add_argument("--out", default=None, help="write it to a file instead of stdout")
+    p.add_argument("--full", action="store_true", help="include the worksheet's notes as well")
+    p.add_argument("--extra", action="append", metavar="FILE", help="inline a command's saved output; repeatable")
+    p.add_argument("--extra-chars", type=int, default=6000, help="truncate each --extra file at this many characters")
+    p.add_argument("--table-only", action="store_true", help="do not ask PINE about the disc")
+    p.add_argument("--site", default=None, help="the hook site, if you know it and PINE does not")
+    p.add_argument("--cave", default=None, help="the cave address, to report what is installed")
+    p.set_defaults(func=cmd_share)
 
     p = sub.add_parser("selfcheck", help="offline checks: encodings, cave semantics, protocol")
     p.add_argument("-v", "--verbose", action="store_true")

@@ -146,6 +146,70 @@ else has to run. The filename has to be your disc's CRC (the dotted `uuid` in
 
 ---
 
+---
+
+## If you are doing this from a phone
+
+Two things are worth knowing, because this changes what is possible rather than just
+how it feels:
+
+**The tool runs where PCSX2 runs.** It talks to the emulator over PINE, which is a
+local IPC channel (Windows: TCP `127.0.0.1:28011`; Linux/macOS: a unix socket). It is
+not a network service and it is not exposed to the internet, so the phone in your
+hand cannot reach the emulator on its own. Also worth saying plainly: **Android PS2
+emulators do not have PINE**, so a phone-only setup (game running on the phone) cannot
+be hooked by this mod at all -- the game has to be in PCSX2 on a computer.
+
+That leaves two practical arrangements.
+
+**One: the computer runs everything, the phone is the conversation.** This is the one
+to use. Run the commands on the computer, then get the *bundle* to the phone:
+
+```bash
+python -m aecoops share --out bundle.txt          # 3 KB: what is measured, what is not
+python -m aecoops share --extra sweep.txt         # ...and inline a saved command's output
+```
+
+`share` prints only the bundle, so `python -m aecoops share > bundle.txt` works too,
+and `--extra` folds a saved `sweep`/`diff` output into the same text so there is one
+thing to move, not five. Then send that file to the phone any way you like -- a
+message to yourself, a note app, email -- and paste it here. It is addresses, names
+and counts: no game data, nothing that should not circulate.
+
+Coming back the other way is symmetric. When I answer with a batch of measurements,
+put them in a file and apply them in one command instead of one command each:
+
+```bash
+# measurements.txt, with the lines exactly as sent:
+#   globals.frame_hook.addr = 0x00123450
+#   globals.view_mode.addr = 0x0011A2B4
+python -m aecoops set --file measurements.txt
+```
+
+**Two: the phone is the terminal (advanced).** Android can run the tool itself in
+[Termux](https://termux.dev) (`pkg install python git`), and Android's `adb` can
+tunnel the phone's localhost to the computer's over USB, which is what makes the
+local-only PINE port reachable:
+
+```bash
+# on the COMPUTER, with the phone attached and USB debugging on:
+adb forward tcp:28011 tcp:28011
+
+# on the PHONE, in Termux:
+git clone -b arena/aa9f0fae-universal-modder https://github.com/axolotljose/universal-modder.git
+cd universal-modder/examples/ape-escape-3-coop
+python -m aecoops selfcheck        # proves the tool itself works on the phone
+python -m aecoops doctor           # reaches PCSX2 through the adb tunnel
+```
+
+From there every command in this page works as written, on the phone, including
+`discover try` -- which is the one command where being on the phone is actually
+*better*, because the emulator screen is in front of you while it asks. It is more
+setup than arrangement one, and it needs Termux, adb and USB debugging; take it only
+if you would rather not move text between two machines.
+
+---
+
 ## What to send back if it fights you
 
 Raw output, messy is fine — these four cover almost every case:
@@ -154,6 +218,18 @@ Raw output, messy is fine — these four cover almost every case:
 2. the whole `sweep` table (I care most about which row hit frame rate),
 3. the two addresses `discover diff` reported around the minigame, if you get that far,
 4. the exact text of anything that refused or crashed.
+
+One command produces all of it:
+
+```bash
+python -m aecoops share --extra sweep.txt --out bundle.txt
+```
+
+`share` never includes the ISO, a savestate, a RAM dump, extracted files or a
+decompiled listing -- it reads the worksheet and the emulator's own metadata (serial,
+title, CRC, run state) and nothing else, and a journal is summarised as a count
+rather than quoted. So the bundle is safe to paste anywhere, and it is the only thing
+worth sending.
 
 **Do not send** your ISO, a savestate, a RAM dump, extracted files, or a decompiled
 listing. None of that is needed, and it is the one thing that must never circulate.

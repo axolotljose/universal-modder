@@ -372,6 +372,39 @@ belongs to -- one view mode, a layout id, or a count that means something else n
 -- is the part that needs your eyes on the game, and the run ends by printing the
 two `aecoops set` commands rather than guessing which one you meant.
 
+## Sixth pass: the hand-off, for someone measuring from a phone
+
+The measuring happens on the machine running the game; the person doing it is often
+reading a chat on a phone with a terminal open somewhere else. That gap is not a
+detail -- it decides whether the loop actually gets run. So the last piece is the
+hand-off itself, in two directions.
+
+Out: `aecoops share` prints one small bundle -- what is measured, what is still blank,
+which disc, what is installed -- and its whole stdout *is* the payload, so a copy of
+the terminal output is the message (`--out` writes the same thing to a file, and
+`--extra` folds a saved `sweep` or `diff` into it so there is one thing to move
+rather than five). Three kilobytes, plain ASCII, wrapped so no line runs off a phone
+screen.
+
+The part worth testing is not the formatting but what the bundle *cannot* carry. Its
+rule is addresses and counts, and never game bytes -- and that is structural rather
+than a promise, because it is built from the worksheet and the emulator's own metadata
+(serial, title, CRC, run state) and has no code path to a game file or a memory
+buffer. The closest call is the journal, whose payload is original instruction bytes;
+the install line reports it as a count and an address, and a test asserts that no
+token in the bundle is longer than an address.
+
+Back: a batch of measurements arrives as text, so `aecoops set --file measurements.txt`
+applies it in one command instead of one command per address -- which is also the
+first time the file form gets whitespace handling right (" 2026-10-15" is not a date).
+
+Also written down, because it is a hard limit and not a preference: **PINE is local,
+and Android PS2 emulators do not have it.** A phone-only setup cannot be hooked by
+this mod at all; the game has to be in PCSX2 on a computer. The phone can still be
+the terminal -- Termux plus `adb forward tcp:28011 tcp:28011` tunnels the phone's
+localhost to the computer's over USB, and `discover try` is honestly *better* there,
+because the emulator screen is in front of you while it asks.
+
 ## What is not done
 
 **The addresses.** Every field the mod needs is in

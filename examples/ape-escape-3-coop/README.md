@@ -42,7 +42,7 @@ need the game and an emulator; nothing from the disc ships here.
 
 ### Status, honestly
 
-The mod's code is finished and tested -- 276 tests, including the machine code
+The mod's code is finished and tested -- 293 tests, including the machine code
 running in a bundled R5900 interpreter and the whole mod running end to end
 against a simulated console that rewrites its own state every frame, the way the
 real engine does.
@@ -105,6 +105,12 @@ python -m aecoops discover poke --call 0x00123456=1 --duration 4
 
 # keep the two heroes from wandering into different load zones
 python -m aecoops play --p1 kei --p2 yumi --tether-radius 200
+
+# stuck? one small text file with everything a helper needs (addresses only, no game data)
+python -m aecoops share --extra sweep.txt --out bundle.txt
+
+# and when someone hands you a batch of measurements, apply it in one command
+python -m aecoops set --file measurements.txt
 ```
 
 Ctrl-C stops the watchdog. `python -m aecoops eject --site 0x... --cave 0x...`
@@ -260,8 +266,8 @@ You cannot run PS2 code in CI, so the project brings its own two oracles:
    mode, per-view HUD, camera targets, calls, eject -- runs against it.
 
 ```bash
-python -m unittest discover -s tests -t .   # 276 tests, ~30 s, no emulator needed
-python -m aecoops selfcheck                 # 114 checks, one command, no emulator
+python -m unittest discover -s tests -t .   # 293 tests, ~30 s, no emulator needed
+python -m aecoops selfcheck                 # 123 checks, one command, no emulator
 ```
 
 The HUD tests are the ones worth reading: they assert that the mod's writes land
@@ -309,7 +315,7 @@ aecoops/
 docs/DISCOVERY.md   how to find each address, with the failure table
 MODLOG.md           the journal kept while building this
 patches/            exported `.pnach` files, and what goes in them
-tests/              276 tests: protocol, encodings, cave semantics, HUD, calls, docs
+tests/              293 tests: protocol, encodings, cave semantics, HUD, calls, docs
 ```
 
 ---
