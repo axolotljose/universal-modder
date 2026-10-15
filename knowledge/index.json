@@ -43,6 +43,45 @@
   ]
  },
  {
+  "path": "games/garrys-mod/epic-sweps-100-zombies-and-7000-missiles.md",
+  "kind": "game",
+  "title": "Garry's Mod SWEPs: a 100-zombie box and 7000 missiles without 7000 entities",
+  "game": "Garry's Mod",
+  "games_also": [],
+  "game_version": "Garry's Mod (Steam), sandbox gamemode, Windows",
+  "platform": "windows",
+  "engine": "source",
+  "route": "loader-api",
+  "tools": [
+   "Garry's Mod Lua addons",
+   "fengari (Lua in node, for the offline harness)",
+   "Pillow (icons)",
+   "python wave + zlib (procedural SFX and PNGs)"
+  ],
+  "anti_cheat": "VAC on GMod's multiplayer; local listen server / single player, no injection, no bypass",
+  "status": "in-progress",
+  "agents": [
+   "Arena.ai (Agent Mode)"
+  ],
+  "humans": [],
+  "date": "2026-10-15",
+  "links": [
+   "examples/gmod-epic-sweps"
+  ],
+  "tags": [
+   "garrys-mod",
+   "source",
+   "swep",
+   "lua",
+   "entity-budget",
+   "net",
+   "effects",
+   "sound-scripts",
+   "procedural-audio",
+   "offline-harness"
+  ]
+ },
+ {
   "path": "games/gta-v/minecraft-passthrough.md",
   "kind": "game",
   "title": "Minecraft inside GTA V (passthrough mod)",

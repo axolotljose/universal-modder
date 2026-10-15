@@ -1,0 +1,192 @@
+# Garry's Mod — two meme SWEPs: `100 ZOMBIE SPAWNER` and `7000 F*CKING MISSILES`
+
+A complete GMod addon (`epic_sweps/`) with two weapons in the **EPIC SWEPs** spawnmenu tab, plus the
+offline harness we used to prove both run without errors.
+
+| Weapon | Class name | What it does |
+|---|---|---|
+| **100 Zombie Spawner** | `epic_zombiespawner` | You throw a box. It cracks open with a green portal ring, a sky beam, dust and dynamic light — then **100 zombies** walk out of it in four waves. |
+| **7000 F*cking Missiles** | `epic_missilebarrage` | You paint a target. Big text slams onto every screen: **"7 THOUSAND F*CKING MISSILES"**, then **"BLOW UP THIS MAN"**, a lock-on reticle, then **7000 missiles fall out of the sky** and flatten everything in a 1400-unit area. |
+
+Both also have voice lines (see [Voice](#voice-lines)).
+
+## Download
+
+Prebuilt addons — each zip has the addon folder at its root, so unzipping into `garrysmod/addons/` *is* the install:
+
+- **both weapons** → [`epic_sweps.zip`](https://github.com/axolotljose/universal-modder/raw/v1.0/examples/gmod-epic-sweps/downloads/epic_sweps.zip) · 2.2 MB
+- **just the zombie box** → [`epic_zombie_spawner.zip`](https://github.com/axolotljose/universal-modder/raw/v1.0/examples/gmod-epic-sweps/downloads/epic_zombie_spawner.zip) · 2.2 MB
+- **just the missiles** → [`epic_7000_missiles.zip`](https://github.com/axolotljose/universal-modder/raw/v1.0/examples/gmod-epic-sweps/downloads/epic_7000_missiles.zip) · 2.2 MB
+
+The three finished zips are committed in `downloads/` so they are always one click away; they are also
+listed on [the release page](https://github.com/axolotljose/universal-modder/releases/tag/v1.0). Nothing
+here needs trusting a binary: `python3 tools/build_materials.py --package` rebuilds all three from the
+source in this folder, and `epic_sweps/` in the repo *is* the addon — you can copy that folder into
+`garrysmod/addons/` and skip the download entirely.
+
+## Install
+
+Drop the folder in and restart GMod:
+
+```
+garrysmod/addons/epic_sweps/
+```
+
+Only want one of them? Each half is also a standalone addon (already built into `downloads/`, or rebuild:
+
+```bash
+python3 tools/build_materials.py --package     # -> downloads/{epic_zombie_spawner,epic_7000_missiles}.zip
+```
+
+Then: spawnmenu → **Weapons → EPIC SWEPs**, or `give weapon_epic_zombiespawner` /
+`give weapon_epic_missilebarrage` in the console. Works on sandbox, on a local listen server
+(`-insecure`) and on a Semi-Sideways-style server; if there are no zombie NPCs installed the spawner
+falls back to zombie-brained citizens or physics ragdolls, so the box always delivers 100 of *something*.
+
+## Tuning
+
+Everything is in `epic_sweps/lua/epic_sweps/shared/epic_sweps_config.lua`. Console commands, saved
+between sessions:
+
+| CVar | Default | Meaning |
+|---|---|---|
+| `epic_zombies_count` | 100 | zombies per box |
+| `epic_zombies_instant` | 0 | `1` skips the waves and dumps all of them at once (fun, painful) |
+| `epic_missiles_count` | 7000 | missiles per barrage |
+| `epic_show_text` | 1 | the big on-screen text |
+| `epic_play_voice` | 1 | the voice lines |
+| `epic_screen_shake` | 1 | screen shake |
+
+The two counts are server-authoritative (created with `FCVAR_REPLICATED`, so your HUD shows what the
+server is actually spawning). The three presentation toggles are deliberately per-player: a
+`FCVAR_REPLICATED` **and** `FCVAR_ARCHIVE` cvar overwrites your own saved choice on every connect, which
+is a rude thing for "hide the big text" to do.
+
+There is also a slider panel at **Spawnmenu → Utilities → Epic SWEPs**.
+
+## How 7000 missiles does not kill the server
+
+This is the whole trick, and the reason naive implementations of this idea crash:
+
+- **One entity, whole server.** `epic_missile_barrage` runs the timetable, does the damage and
+  broadcasts ~30 bytes of state every 0.2 s (centre, start time, count, radius, seed).
+- **Zero entities for the streaks.** Every client runs the same deterministic impact function with the
+  same seed, so everybody sees the same sky without the server networking 7000 positions. The streaks
+  are additive 2D sprites drawn in `HUDPaint`, sampled down to `MaxMissilesDrawn` per frame.
+- **Only 7 % of them bite.** `DamageMissilePercent` impacts do real `TakeDamageInfo`, and every 24th of
+  those also fires `util.BlastDamage` so props and ragdolls actually fly. The other 6500 are light,
+  noise and fire — which is what 7000 missiles should look like anyway.
+- **The explosion visuals are our own** (`epic_explosion`, render-API flash + ring + one dynamic light),
+  not the engine's `explosion` effect, which spawns client-side debris entities you cannot afford by the thousand.
+
+The zombie box uses the same shape of trick: the horde is real (100 NPCs), but the *portal* is state +
+effects, and it counts itself down so a 100-zombie spam does not melt the server
+(`MaxZombiesAlive`, `RemoveAfter`).
+
+## Voice lines
+
+`cfg.Voice` lists lines as `{ file, text, start }`. The **text is always drawn** — if a wav is missing,
+muted, or `epic_play_voice 0`, the words still appear on screen at exactly the right moment. The four
+shipped lines are TTS takes; replace them by dropping your own 44.1 kHz / 16-bit / **mono** `.wav`
+files over these names (GMod rejects 48 kHz and 32-bit files):
+
+```
+sound/epic_sweps/missiles_1.wav   "7 thousand fucking missiles"
+sound/epic_sweps/missiles_2.wav   "blow up this man"
+sound/epic_sweps/zombie_1.wav     "100 zombies"
+sound/epic_sweps/zombie_2.wav     "release the horde"
+```
+
+One honest substitution: the text the game **shows** is exactly `cfg.Voice` (`"7 THOUSAND F*CKING
+MISSILES"`, `"BLOW UP THIS MAN"`), but the shipped `missiles_2.wav` audio says *"Blow it all up!"* — the
+text-to-speech service refused the literal line. Nothing enforces that: record, download or synthesise
+any take you like and drop it on that filename, and the audio will match the text. If you keep the file
+as it is, nobody hears the difference unless they are looking away.
+
+The other sounds (`explosion`, `launch`, `siren`, `whine`, `portal_hum`) are **generated procedurally**
+by `tools/make_sfx.py` — pure Python, no samples, nothing to license. Every sound Valve ships is only
+*referenced by path*, never copied into the addon.
+
+## Files
+
+```
+downloads/*.zip                                        the three shippable addons (see Download above)
+epic_sweps/
+  addon.txt
+  scripts/epic_sweps_sound.txt            sound scripts (random variants, pitch jitter)
+  materials/epic_sweps/{flash,missile_trail}.png|.vmt    additive sprites
+  materials/vgui/entities/*.png                          spawnmenu icons
+  sound/epic_sweps/*.wav                                 generated SFX + the 4 voice takes
+  lua/autorun/epic_sweps_init.lua                        loader: includes modules in a fixed order
+  lua/epic_sweps/shared/                                 config, util, net, timeline, particles, zombies, cvars
+  lua/epic_sweps/client/                                 epic_sweps_hud.lua (the big text), epic_sweps_render.lua (the show)
+  lua/weapons/epic_zombiespawner/shared.lua
+  lua/weapons/epic_missilebarrage/shared.lua
+  lua/entities/epic_zombie_breach.lua                    server horde logic + broadcast state
+  lua/entities/epic_missile_barrage.lua                  server barrage logic + broadcast state
+  lua/effects/epic_sweps_fx.lua                          epic_explosion / epic_zombie_{burst,wave,pop}
+```
+
+Note the layout: all shared modules live under `lua/epic_sweps/` and are pulled in by one `autorun`
+loader with `include`/`AddCSLuaFile`. `lua/autorun` has no guaranteed load order, so relying on file
+names to load your config before your modules is how addons end up with `attempt to index a nil value
+(global 'EpicSWEPs')`.
+
+## Testing without the game
+
+`tools/stub_gmod.lua` is a fake GMod: Vector/Angle math, `timer`, `hook`, `net` (with real read/write
+type checking), `ents`, convars, `util.Effect`, and `render`/`surface`/`draw` stubs that fail on NaN or
+negative sizes, plus `EmitSound` validation copied from the wiki signatures.
+
+```bash
+npm install                        # dev only, once (fengari + luaparse; the addon itself needs nothing)
+npm test                           # 49 checks: 100 zombies, 7000 fired, damage dealt, streaks drawn
+npm run lint                           # parse, symbols, globals, assets
+```
+
+The test loads the addon as the server, fires both weapons *through the SWEPs*, steps 470 frames of fake
+clock, reloads as a client, replays the server's captured net traffic through the real `net.Receive`, and
+steps the draw hooks. Then it walks the **cold paths** a timeline never touches: the spawnmenu settings
+panel (every control's cvar name is checked against the cvars that actually exist), `DrawHUD`, `Holster`,
+`OnDrop`, `Reload`, 300 queued HUD messages, every particle call with garbage input, level shutdown, and
+`Util`/`Net`/`Timeline` handed nils and zeros.
+
+The four linters are `tools/lint_lua.js` (parses as Lua 5.1), `tools/lint_symbols.js` (every
+`EpicSWEPs.<module>.<fn>` read is defined, following the files' `local U = EpicSWEPs.Util` aliases),
+`tools/lint_globals.js` and `tools/lint_assets.js`. The globals linter is the one worth stealing: its
+whitelist is built by *running* the stub and dumping its environment, so "unknown global" means "an API
+our fake GMod has never heard of" — either a typo in the addon or a hole in the harness, and it found one
+of each. `lint_assets.js` checks the files GMod reads without complaining: soundscript syntax, and that
+every `.wav` and material named anywhere in the addon is actually shipped.
+
+Altogether the harness caught: a `net` framing mismatch between realms; `Entity:EmitSound`'s argument
+order (`name, level, pitch, volume, channel` — *not* the order most tutorials write); `ParticleEffect`
+having no quantity argument; an O(n²) firing loop that quietly dropped the last 27 missiles; the engine's
+`SNDLVL_*` names being **absent from GMod's Lua** (so `soundLevel` arrived as `nil`); `util.comma`, which
+GMod calls `string.Comma` — that one threw every single frame in `SWEP:DrawHUD`; and three soundscript
+format errors the engine would only have answered with silence.
+
+One lesson worth repeating: the stub must not be *nicer* than the game. It originally defined `SNDCHAN_*`
+and `SNDLVL_*` because the addon asked for them, which is exactly how wrong names stayed invisible. Those
+are gone from the harness now, and `EmitSound` rejects a nil sitting in the middle of its argument list
+the way the engine's argument binder does — while still allowing omitted trailing arguments, because in
+Lua those are the same thing as a default.
+
+## What is and is not verified
+
+Verified in the stub harness: both realms load, both weapons fire, exactly 100 zombies spawn, all
+7000 missiles get launched, damage and blast damage land, the required text lines are broadcast, the
+renderer draws streaks/text/lights with no NaN or negative-size draw calls, and every engine call
+matches a documented signature.
+
+**Not** verified in the real game — nobody has booted GMod here. The look of the effects, sound
+levels/attenuation and NPC behaviour on your gamemode are the things to eyeball first. Two honest
+caveats: the icons ship as PNG (GMod auto-imports them; convert to 32-bit TGA with VTFEdit if yours
+shows up blank), and the zombie NPC brains are left to the gamemode, so on a non-Sandbox gamemode the
+horde may stand around until your gamemode gives them targets.
+
+## Ideas from here
+
+`assets/src/` (not in git) holds the big icon sources; regenerate shipped 128×128 icons with
+`python3 tools/build_materials.py --icons`. Custom models: set `SWEP.WorldModel` on either weapon and
+`cfg.ZombieSpawner.Models` to your zombie list — the box works with any model that exists.

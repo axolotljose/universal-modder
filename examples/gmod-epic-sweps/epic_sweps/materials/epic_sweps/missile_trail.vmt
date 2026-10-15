@@ -1,0 +1,8 @@
+"UnlitGeneric"
+{
+	"$basetexture"		"epic_sweps/missile_trail"
+	"$additive"		"1"
+	"$unlitmaterial"	"1"
+	"$vertexcolor"		"1"
+	"$nocull"		"1"
+}

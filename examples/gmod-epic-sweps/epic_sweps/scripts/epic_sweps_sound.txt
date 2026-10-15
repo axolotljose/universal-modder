@@ -1,0 +1,121 @@
+// Sound scripts for Epic SWEPs.
+//
+// These exist so the sounds can be played by name from the console or from another mod, and so the
+// engine picks a random variant for us. The addon's own Lua deliberately plays the .wav PATHS instead:
+// a sound script's volume/pitch/level/channel override whatever you pass to EmitSound (documented on the
+// Entity:EmitSound wiki page as an engine quirk), and the barrage scales impact volume by distance, which
+// has to survive the call. Keep that in mind if you point cfg.Sounds at one of these names.
+//
+// Two format traps, both of which fail silently rather than loudly:
+//   - the attenuation key is "soundlevel", not "level" ("level" is the Lua sound.Add spelling);
+//   - several "wave" lines must be wrapped in "rndwave" - as plain siblings, KeyValues just keeps the last one.
+SoundScript
+{
+	"epic_sweps/explosion"
+	{
+		"channel"		"CHAN_STATIC"		// 6: same file can overlap itself instead of cutting off
+		"volume"		"1.0"
+		"soundlevel"	"SNDLVL_GUNFIRE"	// 140
+		"pitch"			"96,106"
+		"rndwave"
+		{
+			"wave"	"epic_sweps/explosion.wav"
+			"wave"	"epic_sweps/explosion_1.wav"
+			"wave"	"epic_sweps/explosion_2.wav"
+			"wave"	"epic_sweps/explosion_3.wav"
+		}
+	}
+}
+
+SoundScript
+{
+	"epic_sweps/launch"
+	{
+		"channel"		"CHAN_STATIC"
+		"volume"		"0.9"
+		"soundlevel"	"SNDLVL_105dB"
+		"pitch"			"94,110"
+		"rndwave"
+		{
+			"wave"	"epic_sweps/launch.wav"
+			"wave"	"epic_sweps/launch_1.wav"
+			"wave"	"epic_sweps/launch_2.wav"
+			"wave"	"epic_sweps/launch_3.wav"
+		}
+	}
+}
+
+// Loops. Faded at both ends by tools/make_sfx.py, so they survive being restarted mid-barrage.
+SoundScript
+{
+	"epic_sweps/whine"
+	{
+		"channel"		"CHAN_STATIC"
+		"volume"		"0.7"
+		"soundlevel"	"SNDLVL_90dB"
+		"pitch"			"100"
+		"wave"			"epic_sweps/whine.wav"
+	}
+}
+
+SoundScript
+{
+	"epic_sweps/siren"
+	{
+		"channel"		"CHAN_STATIC"
+		"volume"		"0.75"
+		"soundlevel"	"SNDLVL_100dB"
+		"pitch"			"100"
+		"wave"			"epic_sweps/siren.wav"
+	}
+}
+
+// The voice lines. Text on screen is the authority (cfg.Voice[*].text), and the addon points at the wav
+// directly, so a broken or missing script here can never silence the show.
+SoundScript
+{
+	"epic_sweps/missiles_1"
+	{
+		"channel"		"CHAN_STATIC"
+		"volume"		"1.0"
+		"soundlevel"	"SNDLVL_110dB"
+		"pitch"			"100"
+		"wave"			"epic_sweps/missiles_1.wav"
+	}
+}
+
+SoundScript
+{
+	"epic_sweps/missiles_2"
+	{
+		"channel"		"CHAN_STATIC"
+		"volume"		"1.0"
+		"soundlevel"	"SNDLVL_110dB"
+		"pitch"			"100"
+		"wave"			"epic_sweps/missiles_2.wav"
+	}
+}
+
+SoundScript
+{
+	"epic_sweps/zombie_1"
+	{
+		"channel"		"CHAN_STATIC"
+		"volume"		"1.0"
+		"soundlevel"	"SNDLVL_105dB"
+		"pitch"			"100"
+		"wave"			"epic_sweps/zombie_1.wav"
+	}
+}
+
+SoundScript
+{
+	"epic_sweps/zombie_2"
+	{
+		"channel"		"CHAN_STATIC"
+		"volume"		"1.0"
+		"soundlevel"	"SNDLVL_105dB"
+		"pitch"			"100"
+		"wave"			"epic_sweps/zombie_2.wav"
+	}
+}

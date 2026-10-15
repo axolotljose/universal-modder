@@ -1,0 +1,9 @@
+"AddonInfo"
+{
+	"name"		"Epic SWEPs - 100 Zombie Spawner + 7000 F*cking Missiles"
+	"author"	"universal-modder"
+	"contact"	""
+	"Version"	"1.0"
+	"UpstreamPage" ""
+	"tags"		"fun+other"
+}
