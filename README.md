@@ -141,6 +141,12 @@ audio, both PowerShell with embedded C#.
     at AoE2's camera angle.
   - A Transamerica Pyramid wonder.
   - A reverse-engineered `.sld` sprite writer.
+- **[examples/ape-escape-3-coop](examples/ape-escape-3-coop)**: split-screen co-op for Ape Escape 3, as
+  either Kei or Yumi. A ~40 instruction interpreter installed into unused PS2 RAM, reached through one
+  redirected `jal`, re-applying what the engine keeps overwriting: two viewports, two heroes, a character
+  each. Host-side Python discovers the addresses on your own disc and proves a hook runs per frame by
+  measuring its tick rate; the machine code is verified by executing it in a bundled R5900 interpreter. No
+  PCSX2 in CI.
 - **[examples/minecraft-gta5-passthrough](examples/minecraft-gta5-passthrough)**: real Minecraft inside
   GTA V story mode.
   - A Fabric mod and a ScriptHookV + ReShade add-on exchange camera, ground and events over a local
