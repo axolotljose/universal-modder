@@ -85,6 +85,9 @@ class Stage:
     # One full-screen view, and the story renderer's own idea of where a second
     # view goes when it draws one (the MonkeyCam's corner, made up).
     engine_viewports: int = 1
+    # Functions the fake console treats as "the game's own code": a call into one
+    # returns immediately, like a real function would, and the console records it.
+    external: tuple = ()
     engine_view: tuple = (0, 0, 640, 448)
     engine_view2: tuple = (448, 336, 192, 112)
 
@@ -110,6 +113,8 @@ class FakeAEC3:
         self.pcsx2 = FakePCSX2(ram=self.vm.ram)
         self.frames = 0
         self.hook_calls = 0
+        # (function, $a0) for every call the cave made into the game's own code.
+        self.calls: list[tuple[int, int]] = []
         self.kei, self.yumi = kei, yumi
         self._plant()
 
@@ -205,18 +210,31 @@ class FakeAEC3:
                 self.vm.write32(s.viewport(slot, s.off_view_target), 0)
             self._call_hook()
 
-    def _call_hook(self) -> None:
+    def _call_hook(self):
         s = self.stage
         word = self.vm.read32(s.hook_site)
         if (word >> 26) != 0x03:
-            return
+            return None
         target = cave.callee_of_jal(word, s.hook_site)
         if target != s.cave:
             # Not our cave: the game's own call happens and nothing else does.
-            return
+            return None
         self.hook_calls += 1
         self.vm.set_reg("sp", 0x001FFF00)
-        self.vm.run(start=s.hook_site, stop_at=s.hook_site + 8, external_calls=(s.update_fn,), max_steps=10000)
+        # The arguments the game passed to the function we displaced: if the cave
+        # fails to preserve them, the real engine would see garbage here.
+        self.vm.set_reg("a0", 0xAAAAAAAA)
+        self.vm.set_reg("a1", 0xBBBBBBBB)
+        self.vm.set_reg("a2", 0xCCCCCCCC)
+        self.vm.set_reg("a3", 0xDDDDDDDD)
+        result = self.vm.run(
+            start=s.hook_site,
+            stop_at=s.hook_site + 8,
+            external_calls=(s.update_fn, *s.external),
+            max_steps=10000,
+        )
+        self.calls.extend((call.callee, call.a0) for call in result.calls)
+        return result
 
     # -------------------------------------------------------------------- reads
 
@@ -256,6 +274,10 @@ class FakeAEC3:
             self.read(s.viewport(slot, offset))
             for offset in (s.off_view_x, s.off_view_y, s.off_view_w, s.off_view_h)
         )
+
+    def called(self, fn: int) -> list[int]:
+        """Every argument the cave passed to ``fn``, in order."""
+        return [a0 for callee, a0 in self.calls if callee == fn]
 
     def set_engine_char(self, char_id: int) -> None:
         """Pretend the save slot was loaded with a different hero."""

@@ -9,6 +9,7 @@ That turns the most dangerous part of the mod into something testable:
 
 * the cave must write every entry the parameter block lists;
 * it must call the function it displaced, exactly once, with the caller's ``$ra``
+  and the caller's arguments still in ``$a0-$a3``;
   still intact;
 * it must return to ``site + 8`` -- the instruction after the original call's
   delay slot -- and not somewhere approximate;
@@ -45,6 +46,7 @@ class VMError(RuntimeError):
 class Call:
     callee: int
     ra: int
+    a0: int = 0
 
 
 @dataclass
@@ -109,7 +111,15 @@ class R5900VM:
         Addresses in ``external_calls`` behave like a call into the game's own
         function: the VM records the call and returns immediately via ``$ra``,
         which is exactly what the cave has to survive.
+
+        Both the call log and the step budget are per run: ``RunResult.calls`` and
+        ``RunResult.steps`` describe *this* call, not the process's lifetime.
+        (They used to accumulate, which made "was this called on frame two?" quietly
+        answer "yes" on the strength of frame one -- and made the step limit fire on
+        a perfectly healthy cave that had simply been running for a while.)
         """
+        self.calls = []
+        started_at = self.steps
         self.pc = start
         result = RunResult()
         externals = set(external_calls)
@@ -117,15 +127,17 @@ class R5900VM:
             if stop_at is not None and self.pc == stop_at:
                 result.halted = "stop-at"
                 result.pc = self.pc
-                result.steps = self.steps
+                result.steps = self.steps - started_at
                 result.calls = list(self.calls)
                 return result
-            if self.steps >= max_steps:
+            if self.steps - started_at >= max_steps:
                 raise VMError(f"ran {max_steps} steps without stopping (pc={self.pc:#x}); likely a runaway loop")
             if self.pc in externals:
-                self.calls.append(Call(self.pc, self.regs[RA]))
+                self.calls.append(Call(self.pc, self.regs[RA], self.regs[REG["a0"]]))
                 if len(self.trace) < self.trace_limit:
-                    self.trace.append(f"call {self.pc:#010x} ra={self.regs[RA]:#010x}")
+                    self.trace.append(
+                        f"call {self.pc:#010x} ra={self.regs[RA]:#010x} a0={self.regs[REG['a0']]:#010x}"
+                    )
                 self.pc = self.regs[RA]
                 continue
             self.step()

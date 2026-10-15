@@ -87,6 +87,58 @@ class Struct:
 
 
 @dataclass
+class CallSpec:
+    """A function of the game's own the mod may call, and how.
+
+    The mod's other mechanisms *write*: a value, or a copy of one. That is enough
+    for state the engine stores in a word, and not enough for anything that has to
+    be done -- constructing an actor, letting a view mode function rebuild the
+    viewports, binding a pad through a setter. Those are calls, and there is no way
+    to make them from outside the emulator: only code already inside the game can
+    call the game.
+
+    ``once`` is the safe default: a call queued in a single refill (or, with a
+    frozen ``.pnach``, at the first frame of the first stage). Turn it off for a
+    function that is genuinely per-refill idempotent, and think about it first --
+    the difference is between spawning a partner and spawning sixty.
+    """
+
+    name: str
+    addr: int | None = None
+    arg: int | None = None
+    once: bool = True
+    note: str = ""
+    recipe: str = ""
+    verified: str | None = None
+
+    @property
+    def ready(self) -> bool:
+        return self.addr is not None and self.arg is not None
+
+    @classmethod
+    def from_dict(cls, name: str, raw: dict) -> "CallSpec":
+        return cls(
+            name=name,
+            addr=raw.get("addr"),
+            arg=raw.get("arg"),
+            once=bool(raw.get("once", True)),
+            note=raw.get("note", ""),
+            recipe=raw.get("recipe", ""),
+            verified=raw.get("verified"),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "addr": self.addr,
+            "arg": self.arg,
+            "once": self.once,
+            "note": self.note,
+            "recipe": self.recipe,
+            "verified": self.verified,
+        }
+
+
+@dataclass
 class AddressTable:
     game: str = "Ape Escape 3"
     eras: dict = field(default_factory=dict)
@@ -94,6 +146,7 @@ class AddressTable:
     layouts: dict[str, int] = field(default_factory=dict)
     globals: dict[str, Discovery] = field(default_factory=dict)
     structs: dict[str, Struct] = field(default_factory=dict)
+    calls: list[CallSpec] = field(default_factory=list)
     path: Path | None = None
 
     # ----------------------------------------------------------------- loading
@@ -111,6 +164,10 @@ class AddressTable:
             layouts={k: v for k, v in raw.get("layouts", {}).items() if not k.startswith("_")},
             globals={k: Discovery.from_dict(k, v) for k, v in raw.get("globals", {}).items()},
             structs={k: Struct.from_dict(k, v) for k, v in raw.get("structs", {}).items()},
+            calls=[
+                CallSpec.from_dict(entry.get("name", f"call{index}"), entry)
+                for index, entry in enumerate(raw.get("calls", []))
+            ],
             path=path,
         )
 
@@ -123,6 +180,9 @@ class AddressTable:
             "characters": self.characters,
             "layouts": self.layouts,
             "globals": {k: _discovery_dict(v) for k, v in self.globals.items()},
+            "calls": [
+                {"name": c.name, **c.to_dict()} for c in self.calls
+            ],
             "structs": {
                 k: {
                     "base": _discovery_dict(v.base),
@@ -164,8 +224,22 @@ class AddressTable:
     def unresolved_structs(self) -> list[str]:
         return [n for n, s in self.structs.items() if s.base.addr is None and not s.base.signature]
 
+    def unresolved_calls(self) -> list[str]:
+        return [f"calls.{c.name}" for c in self.calls if not c.ready]
+
     def unresolved(self) -> list[str]:
-        return self.unresolved_structs() + self.unresolved_globals() + self.unresolved_fields()
+        return (
+            self.unresolved_structs()
+            + self.unresolved_globals()
+            + self.unresolved_fields()
+            + self.unresolved_calls()
+        )
+
+    def call_spec(self, name: str) -> "CallSpec":
+        for spec in self.calls:
+            if spec.name == name:
+                return spec
+        raise TableError(f"no call named {name!r}; known: {[c.name for c in self.calls]}")
 
     def verified(self) -> list[str]:
         out = []
@@ -241,6 +315,32 @@ class AddressTable:
         if len(parts) == 2 and parts[0] == "layouts":
             self.layouts[parts[1]] = value
             return
+        if len(parts) >= 3 and parts[0] == "calls":
+            # `aecoops set calls.spawn_partner.addr=0x00123456` -- and the entry is
+            # created if this is the first time the name is mentioned, because the
+            # alternative is asking a user to hand-edit JSON to record a measurement.
+            name, field_name = parts[1], parts[2]
+            spec = next((c for c in self.calls if c.name == name), None)
+            if spec is None:
+                if field_name not in ("addr", "arg"):
+                    raise TableError(
+                        f"call {name!r} does not exist yet; set calls.{name}.addr (or .arg) first"
+                    )
+                spec = CallSpec(name=name)
+                self.calls.append(spec)
+            if field_name == "once":
+                if isinstance(value, str):
+                    value = value.strip().lower() not in ("false", "no", "0", "")
+                spec.once = bool(value)
+            elif field_name in ("addr", "arg"):
+                setattr(spec, field_name, None if value is None else int(value))
+            elif field_name == "verified":
+                spec.verified = value
+            elif field_name in ("note", "recipe"):
+                setattr(spec, field_name, str(value))
+            else:
+                raise TableError(f"cannot set calls.{name}.{field_name}")
+            return
         if len(parts) == 3 and parts[0] == "globals":
             entry = self.globals.get(parts[1])
             if entry is None:
@@ -272,7 +372,10 @@ class AddressTable:
         raise TableError(f"don't know how to set {path!r}")
 
     def report(self) -> str:
-        lines = [f"{self.game}: {len(self.globals)} globals, {len(self.structs)} structs"]
+        lines = [
+            f"{self.game}: {len(self.globals)} globals, {len(self.structs)} structs, "
+            f"{len(self.calls)} calls"
+        ]
         for name, d in self.globals.items():
             where = f"{d.addr:#010x}" if d.addr else (f"sig {d.signature}" if d.signature else "NOT FOUND YET")
             mark = "verified" if d.verified else "unverified"
@@ -284,6 +387,12 @@ class AddressTable:
             for fname, fld in struct.fields.items():
                 off = f"{fld.offset:#06x}" if fld.offset is not None else "  TBD "
                 lines.append(f"      .{fname:<20} {off}  {'verified' if fld.verified else 'unverified'}")
+        for spec in self.calls:
+            where = f"{spec.addr:#010x}" if spec.addr else "NOT FOUND YET"
+            arg = f"{spec.arg:#x}" if spec.arg is not None else "?"
+            when = "once" if spec.once else "every refill"
+            mark = "verified" if spec.verified else "unverified"
+            lines.append(f"  [call]   {spec.name:<24} {where:<28} arg {arg:<8} {when:<13} {mark}")
         return "\n".join(lines)
 
 

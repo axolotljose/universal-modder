@@ -1,269 +1,290 @@
 {
-  "game": "Ape Escape 3",
-  "_readme": [
-    "This file is a worksheet, not a finished map. It records every address the co-op mod",
-    "needs, what it knows about each one, and how to re-derive it on a disc we have never",
-    "seen. Nothing here is game data: the entries are addresses, byte patterns and offsets,",
-    "and the whole file is meant to be regenerated on the user's own copy.",
-    "",
-    "status of each entry:",
-    "  addr       - a pinned address (only ever valid for the exact build you measured)",
-    "  signature  - a byte pattern scanned for at install time, so it survives across builds",
-    "  neither    - NOT FOUND YET. `aecoops doctor` lists these; docs/DISCOVERY.md has the recipes",
-    "  verified   - the date someone confirmed it on hardware. null means nobody has."
-  ],
-  "eras": {
-    "ntsc-u": {
-      "serial": "SCUS-97501",
-      "region": "North America",
-      "names": {
-        "kei": "Kei",
-        "yumi": "Yumi"
-      },
-      "note": "also released on PS4/PS5 as a PS2 classic; the classic is the same image"
-    },
-    "pal": {
-      "serial": null,
-      "region": "Europe",
-      "names": {
-        "kei": "Satoru",
-        "yumi": "Sayaka"
-      },
-      "note": "add the serial from your own disc: `aecoops doctor` prints it, along with the CRC"
-    },
-    "ntsc-j": {
-      "serial": null,
-      "region": "Japan",
-      "names": {
-        "kei": "Satoru",
-        "yumi": "Sayaka"
-      },
-      "note": "Saru Get You 3. Add the serial and CRC from your own disc."
-    }
+ "game": "Ape Escape 3",
+ "_readme": [
+  "This file is a worksheet, not a finished map. It records every address the co-op mod",
+  "needs, what it knows about each one, and how to re-derive it on a disc we have never",
+  "seen. Nothing here is game data: the entries are addresses, byte patterns and offsets,",
+  "and the whole file is meant to be regenerated on the user's own copy.",
+  "",
+  "status of each entry:",
+  "  addr       - a pinned address (only ever valid for the exact build you measured)",
+  "  signature  - a byte pattern scanned for at install time, so it survives across builds",
+  "  neither    - NOT FOUND YET. `aecoops doctor` lists these; docs/DISCOVERY.md has the recipes",
+  "  verified   - the date someone confirmed it on hardware. null means nobody has.",
+  "  calls      - functions of the game's own the cave may call, as {addr, arg, once}. They are how the second actor gets constructed or a view mode setter gets told to rebuild: a write can set a word, it cannot make the game do something. See docs/DISCOVERY.md#calls"
+ ],
+ "eras": {
+  "ntsc-u": {
+   "serial": "SCUS-97501",
+   "region": "North America",
+   "names": {
+    "kei": "Kei",
+    "yumi": "Yumi"
+   },
+   "note": "also released on PS4/PS5 as a PS2 classic; the classic is the same image"
   },
-  "characters": {
-    "kei": null,
-    "yumi": null,
-    "_note": "The two hero ids the engine stores in an actor's character field. They are small integers and almost certainly 0 and 1, but 'almost certainly' is how you corrupt a stage's models, so they stay null until measured. Recipe: docs/DISCOVERY.md#character-ids"
+  "pal": {
+   "serial": null,
+   "region": "Europe",
+   "names": {
+    "kei": "Satoru",
+    "yumi": "Sayaka"
+   },
+   "note": "add the serial from your own disc: `aecoops doctor` prints it, along with the CRC"
   },
-  "layouts": {
-    "single": null,
-    "vertical": null,
-    "horizontal": null,
-    "_note": "Values the renderer reads to decide how many viewports to draw and how to cut them. `single` is whatever the story stage writes there today (often 0); a split value is whatever a two-viewport state writes. Note that no Ape Escape 3 minigame is known to be split-screen, so the reference is the story renderer's own secondary views (the MonkeyCam picture-in-picture, the L2 first-person zoom), not a minigame. Recipe: docs/DISCOVERY.md#view-mode"
-  },
-  "globals": {
-    "frame_hook": {
-      "addr": null,
-      "expect": null,
-      "signature": null,
-      "signature_offset": 0,
-      "note": "The `jal` the game executes exactly once per frame in a running stage. Everything the mod does depends on this one: it is where the interpreter gets installed. Until it is set, install() refuses to touch the game.",
-      "recipe": "docs/DISCOVERY.md#frame-hook -- `aecoops discover sweep --from-elf <your.elf>` tests every candidate and keeps the one that ticks at frame rate."
-    },
-    "view_mode": {
-      "addr": null,
-      "signature": null,
-      "note": "Renderer's viewport-count / layout selector. Forcing it to a split value is what gives two screens.",
-      "recipe": "docs/DISCOVERY.md#view-mode"
-    },
-    "actor_count": {
-      "addr": null,
-      "signature": null,
-      "note": "How many player actors the stage simulates this frame. Usually recomputed from the stage's mode, so it needs re-applying every frame rather than being set once.",
-      "recipe": "docs/DISCOVERY.md#actor-count"
-    },
-    "partner_enabled": {
-      "addr": null,
-      "signature": null,
-      "note": "Flag the stage logic reads to decide whether the second hero exists at all (as opposed to being allocated but idle).",
-      "recipe": "docs/DISCOVERY.md#actor-count"
-    },
-    "quota_shared": {
-      "addr": null,
-      "signature": null,
-      "note": "Optional. When set, the monkey quota for the stage is shared and either hero's captures count. Leave unresolved and the mod simply does not touch it.",
-      "recipe": "docs/DISCOVERY.md#quota"
-    },
-    "hud_instances": {
-      "addr": null,
-      "signature": null,
-      "note": "Optional. How many HUD instances the renderer builds this frame: 1 in a story stage, 2 in a two-player minigame. `aecoops play --hud per-view` writes 2 so each half can have its own; `--hud hidden` writes 0. Unmeasured means the mod leaves the HUD completely alone.",
-      "recipe": "docs/DISCOVERY.md#hud"
-    },
-    "viewport_count": {
-      "addr": null,
-      "signature": null,
-      "note": "Optional. How many views of the world the renderer draws this frame: 1 in a story stage (plus the MonkeyCam, which is a separate picture), 2 once the split exists. The rectangle route writes it when it is measured.",
-      "recipe": "docs/DISCOVERY.md#viewports"
-    },
-    "monkeycam": {
-      "addr": null,
-      "signature": null,
-      "note": "The MonkeyCam picture-in-picture: the one place the story renderer is *known* to draw a second view of the world into a rectangle at runtime (L2 enlarges it, L2 restores it). Its address is not needed to run co-op -- it is the reference measurement the viewport recipe starts from.",
-      "recipe": "docs/DISCOVERY.md#viewports"
-    }
-  },
-  "structs": {
-    "actor": {
-      "base": {
-        "addr": null,
-        "signature": null,
-        "pointer_chain": [],
-        "note": "Address of slot 0 of the player-actor table. The engine keeps two of these structures; in story mode it only ever fills slot 0.",
-        "recipe": "docs/DISCOVERY.md#actor-table"
-      },
-      "stride": null,
-      "_stride_note": "Bytes between the two actor structures. Find it by locating the same field (a pad port is the easiest) in both slots.",
-      "count": 2,
-      "fields": {
-        "active": {
-          "offset": null,
-          "width": 4,
-          "note": "Non-zero while the engine simulates this slot. Slot 1 is zeroed in story mode; the mod sets it every frame.",
-          "recipe": "docs/DISCOVERY.md#actor-table"
-        },
-        "char_id": {
-          "offset": null,
-          "width": 4,
-          "note": "Which hero this actor is: Kei or Yumi. Writing the two ids into the two slots is the whole of 'play as either Kei or Yumi'.",
-          "recipe": "docs/DISCOVERY.md#character-ids"
-        },
-        "pad_port": {
-          "offset": null,
-          "width": 4,
-          "note": "Which controller slot drives this actor. 0 for player one, 1 for player two.",
-          "recipe": "docs/DISCOVERY.md#pad-port"
-        },
-        "pos_x": {
-          "offset": null,
-          "width": 4,
-          "note": "World position, in IEEE single-precision. Stored as a float: writes through the cave are raw words, so the mod never has to understand the encoding.",
-          "recipe": "docs/DISCOVERY.md#position"
-        },
-        "pos_y": {
-          "offset": null,
-          "width": 4,
-          "note": "See pos_x.",
-          "recipe": "docs/DISCOVERY.md#position"
-        },
-        "pos_z": {
-          "offset": null,
-          "width": 4,
-          "note": "See pos_x.",
-          "recipe": "docs/DISCOVERY.md#position"
-        },
-        "yaw": {
-          "offset": null,
-          "width": 4,
-          "note": "Facing. Tethered with the position so a mirrored partner looks where player one looks instead of backwards.",
-          "recipe": "docs/DISCOVERY.md#position"
-        }
-      }
-    },
-    "hud": {
-      "base": {
-        "addr": null,
-        "signature": null,
-        "note": "Slot 0 of the HUD instance table. One entry per viewport: in story mode there is one, in a two-player minigame there are two, and that difference is what makes the minigames the reference implementation for a split-screen HUD.",
-        "recipe": "docs/DISCOVERY.md#hud"
-      },
-      "stride": null,
-      "_stride_note": "Bytes between two HUD instances. Find it the same way as the actor stride: the field that differs between the two players' HUDs (a score, a stamina bar, an owner index) appears twice, at the same offset, that far apart.",
-      "count": 2,
-      "fields": {
-        "visible": {
-          "offset": null,
-          "width": 4,
-          "note": "Non-zero while this instance is drawn. Usually 1, but a slot the renderer skipped last frame is remembered as 0, so the mod writes it every frame.",
-          "recipe": "docs/DISCOVERY.md#hud"
-        },
-        "x": {
-          "offset": null,
-          "width": 4,
-          "note": "Where the instance sits, in the game's own HUD coordinates (see `--screen`). In a vertical split the mod puts instance 1 at the left edge of the left view and instance 2 at the left edge of the right view.",
-          "recipe": "docs/DISCOVERY.md#hud"
-        },
-        "y": {
-          "offset": null,
-          "width": 4,
-          "note": "See x.",
-          "recipe": "docs/DISCOVERY.md#hud"
-        },
-        "owner": {
-          "offset": null,
-          "width": 4,
-          "note": "Which player's state this HUD shows -- the field the minigames set to 0 and 1 so each player reads their own score. In story mode there is one candidate state, so leave it unresolved and the mod simply does not write it.",
-          "recipe": "docs/DISCOVERY.md#hud"
-        }
-      }
-    },
-    "camera": {
-      "base": {
-        "addr": null,
-        "signature": null,
-        "note": "The stage camera. Only needed to keep a split view from pointing both halves at the same hero; the engine's own two-player camera path is preferred where it exists.",
-        "recipe": "docs/DISCOVERY.md#camera"
-      },
-      "stride": 0,
-      "count": 2,
-      "fields": {
-        "target_actor": {
-          "offset": null,
-          "width": 4,
-          "note": "Which actor slot this camera follows.",
-          "recipe": "docs/DISCOVERY.md#camera"
-        },
-        "distance": {
-          "offset": null,
-          "width": 4,
-          "note": "Follow distance.",
-          "recipe": "docs/DISCOVERY.md#camera"
-        }
-      }
-    },
-    "viewport": {
-      "base": {
-        "addr": null,
-        "signature": null,
-        "note": "Slot 0 of the viewport table: the rectangle the renderer draws view 0 into. The story stage has one; the split needs two. Start from the MonkeyCam's rectangle, which the game itself moves at runtime and therefore stores in memory rather than baking into the draw call.",
-        "recipe": "docs/DISCOVERY.md#viewports"
-      },
-      "stride": null,
-      "_stride_note": "Bytes between two viewport rectangles. If the game only ever has one, this is the size of the structure: find it by looking for the next field after w/h that the renderer sets.",
-      "count": 2,
-      "fields": {
-        "x": {
-          "offset": null,
-          "width": 4,
-          "note": "Rectangle left edge, in the renderer's coordinate space.",
-          "recipe": "docs/DISCOVERY.md#viewports"
-        },
-        "y": {
-          "offset": null,
-          "width": 4,
-          "note": "Rectangle top edge.",
-          "recipe": "docs/DISCOVERY.md#viewports"
-        },
-        "w": {
-          "offset": null,
-          "width": 4,
-          "note": "Rectangle width. In a vertical split this is half the frame.",
-          "recipe": "docs/DISCOVERY.md#viewports"
-        },
-        "h": {
-          "offset": null,
-          "width": 4,
-          "note": "Rectangle height. In a horizontal split this is half the frame.",
-          "recipe": "docs/DISCOVERY.md#viewports"
-        },
-        "target_actor": {
-          "offset": null,
-          "width": 4,
-          "note": "Optional. Which actor slot this view follows: 0 for player one, 1 for player two. Writing it is what stops both halves pointing at the same hero.",
-          "recipe": "docs/DISCOVERY.md#viewports"
-        }
-      }
-    }
+  "ntsc-j": {
+   "serial": null,
+   "region": "Japan",
+   "names": {
+    "kei": "Satoru",
+    "yumi": "Sayaka"
+   },
+   "note": "Saru Get You 3. Add the serial and CRC from your own disc."
   }
+ },
+ "characters": {
+  "kei": null,
+  "yumi": null,
+  "_note": "The two hero ids the engine stores in an actor's character field. They are small integers and almost certainly 0 and 1, but 'almost certainly' is how you corrupt a stage's models, so they stay null until measured. Recipe: docs/DISCOVERY.md#character-ids"
+ },
+ "layouts": {
+  "single": null,
+  "vertical": null,
+  "horizontal": null,
+  "_note": "Values the renderer reads to decide how many viewports to draw and how to cut them. `single` is whatever the story stage writes there today (often 0); a split value is whatever a two-viewport state writes. Note that no Ape Escape 3 minigame is known to be split-screen, so the reference is the story renderer's own secondary views (the MonkeyCam picture-in-picture, the L2 first-person zoom), not a minigame. Recipe: docs/DISCOVERY.md#view-mode"
+ },
+ "globals": {
+  "frame_hook": {
+   "addr": null,
+   "expect": null,
+   "signature": null,
+   "signature_offset": 0,
+   "note": "The `jal` the game executes exactly once per frame in a running stage. Everything the mod does depends on this one: it is where the interpreter gets installed. Until it is set, install() refuses to touch the game.",
+   "recipe": "docs/DISCOVERY.md#frame-hook -- `aecoops discover sweep --from-elf <your.elf>` tests every candidate and keeps the one that ticks at frame rate."
+  },
+  "view_mode": {
+   "addr": null,
+   "signature": null,
+   "note": "Renderer's viewport-count / layout selector. Forcing it to a split value is what gives two screens.",
+   "recipe": "docs/DISCOVERY.md#view-mode"
+  },
+  "actor_count": {
+   "addr": null,
+   "signature": null,
+   "note": "How many player actors the stage simulates this frame. Usually recomputed from the stage's mode, so it needs re-applying every frame rather than being set once.",
+   "recipe": "docs/DISCOVERY.md#actor-count"
+  },
+  "partner_enabled": {
+   "addr": null,
+   "signature": null,
+   "note": "Flag the stage logic reads to decide whether the second hero exists at all (as opposed to being allocated but idle).",
+   "recipe": "docs/DISCOVERY.md#actor-count"
+  },
+  "quota_shared": {
+   "addr": null,
+   "signature": null,
+   "note": "Optional. When set, the monkey quota for the stage is shared and either hero's captures count. Leave unresolved and the mod simply does not touch it.",
+   "recipe": "docs/DISCOVERY.md#quota"
+  },
+  "hud_instances": {
+   "addr": null,
+   "signature": null,
+   "note": "Optional. How many HUD instances the renderer builds this frame: 1 in a story stage, 2 in a two-player minigame. `aecoops play --hud per-view` writes 2 so each half can have its own; `--hud hidden` writes 0. Unmeasured means the mod leaves the HUD completely alone.",
+   "recipe": "docs/DISCOVERY.md#hud"
+  },
+  "viewport_count": {
+   "addr": null,
+   "signature": null,
+   "note": "Optional. How many views of the world the renderer draws this frame: 1 in a story stage (plus the MonkeyCam, which is a separate picture), 2 once the split exists. The rectangle route writes it when it is measured.",
+   "recipe": "docs/DISCOVERY.md#viewports"
+  },
+  "monkeycam": {
+   "addr": null,
+   "signature": null,
+   "note": "The MonkeyCam picture-in-picture: the one place the story renderer is *known* to draw a second view of the world into a rectangle at runtime (L2 enlarges it, L2 restores it). Its address is not needed to run co-op -- it is the reference measurement the viewport recipe starts from.",
+   "recipe": "docs/DISCOVERY.md#viewports"
+  }
+ },
+ "structs": {
+  "actor": {
+   "base": {
+    "addr": null,
+    "signature": null,
+    "pointer_chain": [],
+    "note": "Address of slot 0 of the player-actor table. The engine keeps two of these structures; in story mode it only ever fills slot 0.",
+    "recipe": "docs/DISCOVERY.md#actor-table"
+   },
+   "stride": null,
+   "_stride_note": "Bytes between the two actor structures. Find it by locating the same field (a pad port is the easiest) in both slots.",
+   "count": 2,
+   "fields": {
+    "active": {
+     "offset": null,
+     "width": 4,
+     "note": "Non-zero while the engine simulates this slot. Slot 1 is zeroed in story mode; the mod sets it every frame.",
+     "recipe": "docs/DISCOVERY.md#actor-table"
+    },
+    "char_id": {
+     "offset": null,
+     "width": 4,
+     "note": "Which hero this actor is: Kei or Yumi. Writing the two ids into the two slots is the whole of 'play as either Kei or Yumi'.",
+     "recipe": "docs/DISCOVERY.md#character-ids"
+    },
+    "pad_port": {
+     "offset": null,
+     "width": 4,
+     "note": "Which controller slot drives this actor. 0 for player one, 1 for player two.",
+     "recipe": "docs/DISCOVERY.md#pad-port"
+    },
+    "pos_x": {
+     "offset": null,
+     "width": 4,
+     "note": "World position, in IEEE single-precision. Stored as a float: writes through the cave are raw words, so the mod never has to understand the encoding.",
+     "recipe": "docs/DISCOVERY.md#position"
+    },
+    "pos_y": {
+     "offset": null,
+     "width": 4,
+     "note": "See pos_x.",
+     "recipe": "docs/DISCOVERY.md#position"
+    },
+    "pos_z": {
+     "offset": null,
+     "width": 4,
+     "note": "See pos_x.",
+     "recipe": "docs/DISCOVERY.md#position"
+    },
+    "yaw": {
+     "offset": null,
+     "width": 4,
+     "note": "Facing. Tethered with the position so a mirrored partner looks where player one looks instead of backwards.",
+     "recipe": "docs/DISCOVERY.md#position"
+    }
+   }
+  },
+  "hud": {
+   "base": {
+    "addr": null,
+    "signature": null,
+    "note": "Slot 0 of the HUD instance table. One entry per viewport: in story mode there is one, in a two-player minigame there are two, and that difference is what makes the minigames the reference implementation for a split-screen HUD.",
+    "recipe": "docs/DISCOVERY.md#hud"
+   },
+   "stride": null,
+   "_stride_note": "Bytes between two HUD instances. Find it the same way as the actor stride: the field that differs between the two players' HUDs (a score, a stamina bar, an owner index) appears twice, at the same offset, that far apart.",
+   "count": 2,
+   "fields": {
+    "visible": {
+     "offset": null,
+     "width": 4,
+     "note": "Non-zero while this instance is drawn. Usually 1, but a slot the renderer skipped last frame is remembered as 0, so the mod writes it every frame.",
+     "recipe": "docs/DISCOVERY.md#hud"
+    },
+    "x": {
+     "offset": null,
+     "width": 4,
+     "note": "Where the instance sits, in the game's own HUD coordinates (see `--screen`). In a vertical split the mod puts instance 1 at the left edge of the left view and instance 2 at the left edge of the right view.",
+     "recipe": "docs/DISCOVERY.md#hud"
+    },
+    "y": {
+     "offset": null,
+     "width": 4,
+     "note": "See x.",
+     "recipe": "docs/DISCOVERY.md#hud"
+    },
+    "owner": {
+     "offset": null,
+     "width": 4,
+     "note": "Which player's state this HUD shows -- the field the minigames set to 0 and 1 so each player reads their own score. In story mode there is one candidate state, so leave it unresolved and the mod simply does not write it.",
+     "recipe": "docs/DISCOVERY.md#hud"
+    }
+   }
+  },
+  "camera": {
+   "base": {
+    "addr": null,
+    "signature": null,
+    "note": "The stage camera. Only needed to keep a split view from pointing both halves at the same hero; the engine's own two-player camera path is preferred where it exists.",
+    "recipe": "docs/DISCOVERY.md#camera"
+   },
+   "stride": 0,
+   "count": 2,
+   "fields": {
+    "target_actor": {
+     "offset": null,
+     "width": 4,
+     "note": "Which actor slot this camera follows.",
+     "recipe": "docs/DISCOVERY.md#camera"
+    },
+    "distance": {
+     "offset": null,
+     "width": 4,
+     "note": "Follow distance.",
+     "recipe": "docs/DISCOVERY.md#camera"
+    }
+   }
+  },
+  "viewport": {
+   "base": {
+    "addr": null,
+    "signature": null,
+    "note": "Slot 0 of the viewport table: the rectangle the renderer draws view 0 into. The story stage has one; the split needs two. Start from the MonkeyCam's rectangle, which the game itself moves at runtime and therefore stores in memory rather than baking into the draw call.",
+    "recipe": "docs/DISCOVERY.md#viewports"
+   },
+   "stride": null,
+   "_stride_note": "Bytes between two viewport rectangles. If the game only ever has one, this is the size of the structure: find it by looking for the next field after w/h that the renderer sets.",
+   "count": 2,
+   "fields": {
+    "x": {
+     "offset": null,
+     "width": 4,
+     "note": "Rectangle left edge, in the renderer's coordinate space.",
+     "recipe": "docs/DISCOVERY.md#viewports"
+    },
+    "y": {
+     "offset": null,
+     "width": 4,
+     "note": "Rectangle top edge.",
+     "recipe": "docs/DISCOVERY.md#viewports"
+    },
+    "w": {
+     "offset": null,
+     "width": 4,
+     "note": "Rectangle width. In a vertical split this is half the frame.",
+     "recipe": "docs/DISCOVERY.md#viewports"
+    },
+    "h": {
+     "offset": null,
+     "width": 4,
+     "note": "Rectangle height. In a horizontal split this is half the frame.",
+     "recipe": "docs/DISCOVERY.md#viewports"
+    },
+    "target_actor": {
+     "offset": null,
+     "width": 4,
+     "note": "Optional. Which actor slot this view follows: 0 for player one, 1 for player two. Writing it is what stops both halves pointing at the same hero.",
+     "recipe": "docs/DISCOVERY.md#viewports"
+    }
+   }
+  }
+ },
+ "calls": [
+  {
+   "name": "spawn_partner",
+   "addr": null,
+   "arg": null,
+   "once": true,
+   "note": "The stage's own routine for putting the second player actor in the world. If forcing actor_count is not enough, this is the alternative: construct the partner the way the game constructs the first one. Not found yet, and NOT measured: nothing is called until both the address and the argument are here.",
+   "recipe": "docs/DISCOVERY.md#calls",
+   "verified": null
+  },
+  {
+   "name": "set_view_mode",
+   "addr": null,
+   "arg": null,
+   "once": false,
+   "note": "The setter behind the view-mode word, if the renderer recomputes its viewports from something else and the value route alone is not enough. `arg` is the split id; the split values in `layouts` are the ones to try. Left repeating on purpose: a split the engine keeps re-deciding has to be re-told every pass.",
+   "recipe": "docs/DISCOVERY.md#calls",
+   "verified": null
+  }
+ ]
 }

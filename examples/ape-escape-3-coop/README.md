@@ -28,6 +28,11 @@ one screen split down the middle, with pad 1 on one hero and pad 2 on the other:
   one so player two is never pressing buttons at a statue; afterwards
   `--tether-radius N` keeps the two within N world units, so a split cannot walk
   itself into two different loading zones.
+- **Calls, for what a write cannot do.** The cave can also `jal` the game's own
+  functions -- one argument in `$a0`, read from memory if you want -- which is how a
+  second actor gets *constructed* rather than merely described, and how a renderer
+  that recomputes its layout from something else gets told to rebuild. One-shot by
+  default: a call re-applied every frame is sixty partners a second.
 - **One shared quota.** Either hero's captures count toward the stage total.
 - **Ships as a PCSX2 patch.** Once configured, it exports to a `.pnach`, so co-op
   starts with the game and nothing else has to run.
@@ -37,7 +42,7 @@ need the game and an emulator; nothing from the disc ships here.
 
 ### Status, honestly
 
-The mod's code is finished and tested -- 224 tests, including the machine code
+The mod's code is finished and tested -- 268 tests, including the machine code
 running in a bundled R5900 interpreter and the whole mod running end to end
 against a simulated console that rewrites its own state every frame, the way the
 real engine does.
@@ -86,6 +91,10 @@ python -m aecoops play --p1 kei --p2 yumi
 # discovery page) -- the mod drives those too, and `--no-viewports` turns it off
 python -m aecoops discover diff cam_small.json cam_big.json --max-value 700
 
+# and if the renderer rebuilds its views from something else entirely, the route
+# left is to call the game's own setter instead of writing to the word (section 10)
+python -m aecoops discover poke --call 0x00123456=1 --duration 4
+
 # keep the two heroes from wandering into different load zones
 python -m aecoops play --p1 kei --p2 yumi --tether-radius 200
 ```
@@ -102,7 +111,9 @@ python -m aecoops export-pnach --out cheats/SCUS-97501.pnach
 
 Copy that into PCSX2's `cheats/` folder. It carries the cave, the parameter block
 and the trampoline, so co-op loads with the game and the Python side is only for
-discovery and for changing your mind.
+discovery and for changing your mind. A frozen patch has no watchdog, so a call in
+one fires exactly once -- at the first frame of the first stage, which is the shape
+"construct the partner when the stage starts" wants anyway.
 
 ---
 
@@ -123,6 +134,7 @@ a specific pressing of the game rather than of the mod. `aecoops doctor` prints
 | `structs.viewport.*` | the rectangles the two views are drawn into -- the split's second lever, found by watching the MonkeyCam move |
 | `globals.hud_instances`, `structs.hud.*` | how many HUDs the renderer builds, and where each one sits (optional: without them the HUD is left alone) |
 | `actor_count`, `partner_enabled`, `quota_shared` | the flags the stage logic keeps rewriting |
+| `calls.*` | functions of the game's own the cave may call, with the argument to call them with -- how a *write* becomes a *construction*. Optional, and refused unless both halves are measured |
 
 The harness does the hard part for you. **Liveness is measured, not guessed:**
 candidate after candidate is redirected into the cave, and the tool counts how
@@ -160,16 +172,21 @@ single `jal`:
    site+8    : the game carries on exactly as before
 ```
 
-The cave is a ~40 instruction interpreter, and that is the whole in-game half:
+The cave is a 77-instruction interpreter -- 308 of the 448 bytes reserved for it --
+and that is the whole in-game half:
 
 ```
-  save $ra
+  save $ra, $a0-$a3, $sp            <- the game's own arguments must survive us
   tick a counter                    <- this is the mod's liveness oracle
-  for each (address, value) in the block:
+  for each (address, value) in the write list:
       if value has bit 31 set:  read the word at value, store it
       else:                     store the constant
+  for each (function, argument) in the call list:
+      skip empty slots; zero the slot as we take it  <- a call is made once
+      if argument has bit 31 set:  call it with the word at argument
+      else:                        call it with the constant
   jal the function we displaced     <- the game's own code, still called
-  restore $ra
+  restore $ra, $a0-$a3, $sp
   j site+8
 ```
 
@@ -192,9 +209,10 @@ in the same frame, with no host round trip and therefore no lag.
 - **Free RAM is sampled, not assumed.** `find_free_region` proposes a run of zero
   bytes; `verify_stable` then samples it over a second and refuses to use it if
   anything writes there.
-- **The cave preserves the game's own contract.** It clobbers only `$at`, `$t0-$t5`
-  and two words of stack; `$sp`, `$ra`, `$a0-$a3`, `$s*`, `$gp` and `$fp` come out
-  exactly as they went in. There is a test for each of those.
+- **The cave preserves the game's own contract.** It clobbers only `$at`, `$t0-$t6`
+  and nine words of stack; `$sp`, `$ra`, `$a0-$a3`, `$s*`, `$gp` and `$fp` come out
+  exactly as they went in -- including when the mod makes calls of its own, which is
+  the case that actually tempts a shortcut. There is a test for each of those.
 - **Uninstall is a read.** The cave's last call is the function it displaced, so
   `eject` recovers the original instruction from the cave itself instead of
   trusting a file.
@@ -203,6 +221,13 @@ in the same frame, with no host round trip and therefore no lag.
   a half-measured rectangle is refused outright rather than written with three
   sides -- an x/y move with the old w/h draws the old view somewhere strange, which
   looks like a broken renderer rather than a missing number.
+- **A call is made once, and the cave proves it.** A write is re-applied every
+  frame because the engine un-does it every frame; a call is the opposite -- sixty
+  calls a second is sixty partners. So the cave *consumes* a call as it takes it
+  (zeroes the function word), and the host re-sends only the calls it has not yet
+  read back as consumed. A call with an address and no argument is refused outright:
+  jumping into code we found while handing it a value we invented is how a stage
+  crashes.
 - **The HUD is never guessed at.** Every HUD write is gated on a measured address,
   and a mode whose addresses are missing degrades to the next one down with a
   reason. `shared` -- write nothing -- is the default, and the only mode that
@@ -218,16 +243,17 @@ You cannot run PS2 code in CI, so the project brings its own two oracles:
    register file, memory, branch delay slots. The tests assert what the mod
    promises -- every entry applied, the displaced function called exactly once,
    `$ra` holding what the original call would have left, `$sp` restored, an empty
-   block being a no-op, the budget honoured, indirect entries copying.
+   block being a no-op, the budget honoured, indirect entries copying, and a queued
+   call made once with its argument in `$a0` and then consumed.
 2. **A fake console** (`tests/gamesim.py`): a fake PCSX2 speaking real PINE over a
    real socket, joined to the interpreter, with a stand-in game that **rewrites
    its own frame state every frame** -- actor table, view mode, HUD instances, the
    lot. The full path -- install, watchdog, character assignment, tether, split
-   mode, per-view HUD, camera targets, eject -- runs against it.
+   mode, per-view HUD, camera targets, calls, eject -- runs against it.
 
 ```bash
-python -m unittest discover -s tests -t .   # 224 tests, ~22 s, no emulator needed
-python -m aecoops selfcheck                 # 91 checks, one command, no emulator
+python -m unittest discover -s tests -t .   # 268 tests, ~24 s, no emulator needed
+python -m aecoops selfcheck                 # 114 checks, one command, no emulator
 ```
 
 The HUD tests are the ones worth reading: they assert that the mod's writes land
@@ -275,7 +301,7 @@ aecoops/
 docs/DISCOVERY.md   how to find each address, with the failure table
 MODLOG.md           the journal kept while building this
 patches/            exported `.pnach` files, and what goes in them
-tests/              224 tests: protocol, encodings, cave semantics, HUD, end to end
+tests/              268 tests: protocol, encodings, cave semantics, HUD, calls, docs
 ```
 
 ---

@@ -16,6 +16,12 @@ The format is one line per write:
 the CPU, the address is the physical EE address in hex, and ``extended`` writes a
 run of consecutive words -- which is exactly what a code cave and its parameter
 block are.
+
+A frozen patch can carry calls as well as writes. Without a watchdog to refill the
+list, a call fires once -- on the first frame of the first stage, because that is
+when the trampoline first runs -- which is the right shape for "construct the
+second actor when the stage starts". A repeating call in a frozen patch is a lie:
+it would fire once, and the file cannot say otherwise.
 """
 
 from __future__ import annotations
@@ -64,6 +70,8 @@ def build_from_words(
     enabled: bool = True,
     entries: list[tuple[int, int]] | None = None,
     max_entries: int = cave.MAX_ENTRIES,
+    calls: list[tuple[int, int]] | None = None,
+    max_calls: int = cave.MAX_CALLS,
 ) -> str:
     """Build a ``.pnach`` from values read out of the running game.
 
@@ -90,7 +98,7 @@ def build_from_words(
 
     out = list(head)
     out += PnachEntry(cave_addr, interpreter.code, enabled, "cave").lines()
-    block = cave.encode_block(entries or [], max_entries)
+    block = cave.encode_block(entries or [], max_entries, calls=calls or [], max_calls=max_calls)
     out += PnachEntry(cave.param_block_at(cave_addr), block, enabled, "parameter block").lines()
     out += PnachEntry(site, interpreter.trampoline, enabled, "trampoline").lines()
     return "\n".join(out) + "\n"

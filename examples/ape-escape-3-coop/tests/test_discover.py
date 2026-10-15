@@ -390,6 +390,49 @@ class TestPoke(unittest.TestCase):
                 self.pine, self.sim.stage.hook_site, self.sim.stage.cave, [cave.const(0x110020, 1)], duration=0.1
             )
 
+    def test_poke_can_call_a_function_once_rather_than_every_frame(self) -> None:
+        # The write route re-applies every frame because the engine un-does writes.
+        # A call is the opposite: the same candidate written every frame is sixty
+        # spawns a second, so the cave consumes it and the tool's verdict says what
+        # kind of entry it was.
+        fn = 0x00160000
+        self.sim.stage.external = (fn,)
+        driver = self._drive_frames(hz=60.0, duration=0.9)
+        report = discover.poke_entries(
+            self.pine,
+            self.sim.stage.hook_site,
+            self.sim.stage.cave,
+            [],
+            calls=[cave.call(fn, 3)],
+            duration=0.5,
+            expected_hz=60.0,
+        )
+        driver.join(timeout=3.0)
+        self.assertEqual(report.calls, [(fn, 3)])
+        self.assertIn("calling 1 function", report.verdict)
+        self.assertGreater(report.ticks, 5)
+        self.assertEqual(self.sim.called(fn), [3])
+
+    def test_poke_can_pass_the_word_at_an_address(self) -> None:
+        fn = 0x00160000
+        source = 0x00110020
+        self.sim.stage.external = (fn,)
+        self.sim.vm.write32(source, 0x1234)
+        driver = self._drive_frames(hz=60.0, duration=0.9)
+        try:
+            discover.poke_entries(
+                self.pine,
+                self.sim.stage.hook_site,
+                self.sim.stage.cave,
+                [],
+                calls=[cave.call_read(fn, source)],
+                duration=0.5,
+                expected_hz=60.0,
+            )
+        finally:
+            driver.join(timeout=3.0)
+        self.assertEqual(self.sim.called(fn), [0x1234])
+
     def test_a_dead_site_is_reported_rather_than_silently_writing_nothing(self) -> None:
         report = discover.poke_entries(
             self.pine, self.sim.stage.hook_site, self.sim.stage.cave, [cave.const(0x110020, 7)], duration=0.2

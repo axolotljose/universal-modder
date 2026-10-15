@@ -6,6 +6,8 @@ import contextlib
 import io
 import struct
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -376,6 +378,48 @@ class TestCliAgainstSimulatedConsole(unittest.TestCase):
         self.assertEqual(self.sim.read(self.sim.stage.actor_count), 2)
         self.assertEqual(self.sim.actor(0)["char_id"], self.table.character_id("yumi"))
         self.assertEqual(self.sim.actor(1)["char_id"], self.table.character_id("kei"))
+
+    def test_discover_poke_can_call_a_function_of_the_game(self) -> None:
+        # The CLI spelling of the call route: a candidate that has to be *run*
+        # rather than written, tried once, with everything put back afterwards.
+        fn = 0x00160000
+        source = 0x00110020  # a word the fake engine leaves alone
+        self.sim.stage.external = (fn,)
+        self.sim.vm.write32(source, 0x77)
+        stop = threading.Event()
+
+        def drive() -> None:
+            while not stop.is_set():
+                self.sim.frame(1)
+                time.sleep(1.0 / 120.0)
+
+        driver = threading.Thread(target=drive, daemon=True)
+        driver.start()
+        try:
+            code, output = self.run_cli(
+                "discover",
+                "poke",
+                "--site",
+                hex(self.sim.stage.hook_site),
+                "--cave",
+                hex(self.sim.stage.cave),
+                "--call-read",
+                f"{fn:#x}={source:#x}",
+                "--duration",
+                "0.4",
+            )
+        finally:
+            stop.set()
+            driver.join(timeout=2.0)
+        self.assertEqual(code, 0, output)
+        self.assertIn("call", output)
+        # Once, not once per frame -- and the argument was read inside the game.
+        self.assertEqual(self.sim.called(fn), [0x77], output)
+        self.assertFalse(self.sim.cave_installed)
+        self.assertEqual(
+            self.sim.vm.read_bytes(self.sim.stage.cave, cave.CAVE_CODE_SIZE),
+            b"\x00" * cave.CAVE_CODE_SIZE,
+        )
 
     def test_status_and_eject(self) -> None:
         self.run_cli(

@@ -17,7 +17,12 @@ Checked here:
 7. the HUD policy writes nothing on an unmeasured disc, and puts two instances in
    the two halves on a measured one;
 8. the viewport rectangles tile the frame, and a half-measured one is refused
-   rather than half-written.
+   rather than half-written;
+9. the call region does not overlap the write list, and a call is made once, with
+   its argument, and is consumed;
+10. every `docs/DISCOVERY.md#key` pointer the tool or the worksheet prints still
+   resolves to a section of the recipe, which is a promise a message makes every
+   time it says "here is how to measure this".
 """
 
 from __future__ import annotations
@@ -324,6 +329,104 @@ def check_views(c: Checker) -> None:
     c.check("one addressable rectangle means no split", single.entries == [] and not single.placed)
 
 
+def check_calls(c: Checker) -> None:
+    """Calls: the half of the mod that makes the game *do* something.
+
+    A write sets a word; it cannot spawn the second actor or let a view mode setter
+    rebuild the viewports. That needs the game's own code, entered from inside the
+    cave, which is what these checks execute.
+    """
+    c.section("calls (executed in the R5900 simulator)")
+    # The layout, first, because it is the kind of bug that hides: a call slot that
+    # shares bytes with the write list is a call wiped by a full list of writes.
+    terminator = cave.ENTRIES_OFFSET + 8 * (cave.MAX_ENTRIES + 1)
+    c.check(
+        "the call region starts after the entry list's terminator",
+        cave.CALLS_OFFSET >= terminator,
+        f"calls at {cave.CALLS_OFFSET:#x}, terminator ends {terminator:#x}",
+    )
+    c.check(
+        "the call region fits the parameter block",
+        cave.CALLS_END <= cave.PARAM_BLOCK_SIZE,
+        f"{cave.CALLS_END:#x} > {cave.PARAM_BLOCK_SIZE:#x}",
+    )
+    c.check(
+        "an entry list at the budget cannot reach a call slot",
+        cave.ENTRIES_OFFSET + 8 * (cave.MAX_ENTRIES + 1) <= cave.CALLS_OFFSET,
+    )
+    c.check("calls over the budget are refused", _raises(lambda: cave.encode_calls([(1, 0)] * (cave.MAX_CALLS + 1))))
+    c.check("calling address 0 is refused", _raises(lambda: cave.encode_calls([(0, 1)])))
+    c.check(
+        "a constant argument with bit 31 set is refused (it would mean 'read')",
+        _raises(lambda: cave.call(0x00160000, 0x80000000)),
+    )
+    c.check(
+        "...and the indirect spelling refuses a source with bit 31 set",
+        _raises(lambda: cave.call_read(0x00160000, 0x80001000)),
+    )
+
+    site = 0x00123450
+    cave_addr = 0x00140000
+    callee = 0x001D0000
+    spawner = 0x001B0000
+    interp = cave.build_interpreter(cave_addr, site, callee)
+    vm = R5900VM()
+    vm.write_bytes(cave_addr, interp.code)
+    vm.write_bytes(cave.param_block_at(cave_addr), cave.initial_param_block())
+    vm.write32(cave.param_block_at(cave_addr) + 0x08, cave.MAX_ENTRIES)
+    vm.write_bytes(cave.param_block_at(cave_addr) + cave.ENTRIES_OFFSET, cave.encode_entries([]))
+    vm.write_bytes(site, interp.trampoline)
+    vm.set_reg("sp", 0x001FFF00)
+
+    # A spawner that takes its argument in $a0, with the word it is asked to read
+    # sitting where the game would keep a handle.
+    vm.write32(0x00200000, 0x00ABCDEF)
+    vm.write_bytes(
+        cave.param_block_at(cave_addr) + cave.CALLS_OFFSET,
+        cave.encode_calls([cave.call(spawner, 1), cave.call_read(spawner, 0x00200000)]),
+    )
+    result = vm.run(start=site, stop_at=site + 8, external_calls=(callee, spawner))
+    made = [(call.callee, call.a0) for call in result.calls if call.callee == spawner]
+    c.check("the call was made", len(made) == 2, str(made))
+    c.check("...with the constant argument in $a0", made and made[0][1] == 1, str(made))
+    c.check("...and the indirect one read in the cave", made and made[1][1] == 0x00ABCDEF, str(made))
+    c.check(
+        "the displaced function still ran after the calls",
+        result.calls and result.calls[-1].callee == callee,
+        str(result.calls),
+    )
+    c.check(
+        "the call was consumed, so it is not made again",
+        cave.read_calls(_VMReader(vm), cave_addr) == [],
+        str(cave.read_calls(_VMReader(vm), cave_addr)),
+    )
+    second = vm.run(start=site, stop_at=site + 8, external_calls=(callee, spawner))
+    made_again = [call for call in second.calls if call.callee == spawner]
+    block = cave.read_block(_VMReader(vm), cave_addr)
+    c.check("a consumed call is not made a second time", made_again == [], str(made_again))
+    c.check("...and the pass has nothing left to apply", block["applied"] == 0, str(block))
+
+    # Queued but not yet run is what the host reads back to know a call is pending.
+    vm.write_bytes(
+        cave.param_block_at(cave_addr) + cave.CALLS_OFFSET,
+        cave.encode_calls([cave.call(spawner, 3)]),
+    )
+    waiting = cave.read_calls(_VMReader(vm), cave_addr)
+    c.check("a queued call reads back as waiting", waiting == [(spawner, 3)], str(waiting))
+
+    # The worksheet's half: calls are opt-in, and a half-measured one says so.
+    from .addresses import CallSpec
+
+    table = AddressTable.load()
+    c.check("the shipped worksheet's calls are all listed as unresolved", table.unresolved_calls() != [])
+    c.check("...and `unresolved()` mentions them", any("calls." in b for b in table.unresolved()))
+    blank = CallSpec(name="blank")
+    c.check("a blank call is not ready", not blank.ready)
+    c.check("a half-measured call is not ready", not CallSpec(name="half", addr=0x00160000).ready)
+    c.check("a measured one is", CallSpec(name="spawn", addr=0x00160000, arg=1).ready)
+    c.check("once is the default", CallSpec(name="spawn").once)
+
+
 def check_hud(c: Checker) -> None:
     """The HUD policy: geometry that tiles, and writes that are gated on data.
 
@@ -378,6 +481,59 @@ def check_hud(c: Checker) -> None:
     c.check("hidden switches the instances off rather than hiding one", hidden.entries == [(0x00110024, 0)])
 
 
+def doc_pointer_problems(root: Path | None = None) -> list[str]:
+    """Every `docs/DISCOVERY.md#key` in the tool, checked against the doc's table.
+
+    A message that points at the recipe is the difference between a tool that says
+    "not measured" and a tool that says "not measured, here is how". A pointer into a
+    section that does not exist is worse than no pointer, because it reads as help.
+    The keys are deliberately short (a warning line has to fit a terminal), so the doc
+    keeps the key table and this checks both halves of it: that the section a key
+    names exists, and that every key the code prints is in the table.
+    """
+    import re
+
+    root = root or Path(__file__).resolve().parent.parent
+    doc = root / "docs" / "DISCOVERY.md"
+    if not doc.exists():
+        return [f"{doc} is missing: the tool's messages point at it"]
+    text = doc.read_text(encoding="utf-8")
+    body = text.split("## Which section a message means", 1)
+    if len(body) < 2:
+        return [f"{doc.name}: the key table ('## Which section a message means') is gone"]
+    table = body[1].split("\n---", 1)[0]
+    keys = {name: target for name, target in re.findall(r"^\|\s*`([a-z0-9-]+)`\s*\|\s*([^|]+?)\s*\|\s*$", table, re.M)}
+    numbered = {int(n) for n in re.findall(r"^## (\d+)\.", text, re.M)}
+    titled = {t.strip().lower() for t in re.findall(r"^## (.+)$", text, re.M)}
+
+    problems: list[str] = []
+    for name, target in sorted(keys.items()):
+        if target.isdigit():
+            if int(target) not in numbered:
+                problems.append(f"key {name!r} points at section {target}, which the doc does not have")
+        elif target.lower() not in titled:
+            problems.append(f"key {name!r} points at {target!r}, which is not a heading")
+
+    sources = sorted((root / "aecoops").rglob("*.py")) + [root / "aecoops" / "data" / "addresses.json"]
+    for source in sources:
+        if not source.exists() or source.name == "selftest.py":
+            # This file's prose is *about* the convention, so it is the one place a
+            # bare `DISCOVERY.md#key` is not a pointer.
+            continue
+        for fragment in sorted(set(re.findall(r"DISCOVERY\.md#([A-Za-z0-9_-]*)", source.read_text(encoding="utf-8")))):
+            if fragment not in keys:
+                problems.append(f"{source.name} points at DISCOVERY.md#{fragment}, which is not a key in the table")
+    return problems
+
+
+def check_pointers(c: Checker) -> None:
+    """The recipe pointers: every message that says "here is how" is right."""
+    c.section("recipe pointers")
+    problems = doc_pointer_problems()
+    c.check("every DISCOVERY.md#key in the tool resolves to a section", not problems, "; ".join(problems))
+    c.check("the calls recipe is reachable", "calls" in (Path(__file__).resolve().parent.parent / "docs" / "DISCOVERY.md").read_text(encoding="utf-8"))
+
+
 # ------------------------------------------------------------------- utilities
 
 
@@ -413,5 +569,7 @@ def run_all(verbose: bool = False) -> int:
     check_table(c)
     check_hud(c)
     check_views(c)
+    check_calls(c)
+    check_pointers(c)
     print(f"\n{c.passed} passed, {c.failed} failed")
     return 0 if c.failed == 0 else 1

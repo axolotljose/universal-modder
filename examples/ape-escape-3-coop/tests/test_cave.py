@@ -31,15 +31,29 @@ class CaveHarness:
         self.vm.write_bytes(site, self.interp.trampoline)
         self.vm.set_reg("sp", 0x001FF000)
 
-    def set_entries(self, entries: list[tuple[int, int]]) -> None:
+    def set_entries(self, entries: list[tuple[int, int]], calls: list[tuple[int, int]] | None = None) -> None:
         block = cave.param_block_at(self.cave)
-        self.vm.write_bytes(block + 0x10, cave.encode_entries(entries))
+        self.vm.write_bytes(block + cave.ENTRIES_OFFSET, cave.encode_entries(entries))
         self.vm.write32(block + 0x08, cave.MAX_ENTRIES)
+        if calls is not None:
+            self.vm.write_bytes(block + cave.CALLS_OFFSET, cave.encode_calls(calls))
 
-    def call(self) -> object:
+    def call(self, extra_externals: tuple[int, ...] = ()) -> object:
         """One frame's worth of the game: the jal at the site, and its effect."""
         self.vm.regs[0] = 0
-        return self.vm.run(start=self.site, stop_at=self.site + 8, external_calls=(self.callee,))
+        return self.vm.run(
+            start=self.site,
+            stop_at=self.site + 8,
+            external_calls=(self.callee, *extra_externals),
+        )
+
+    def call_slot(self, index: int) -> tuple[int, int]:
+        """What is left in call slot ``index`` afterwards (0, 0 means consumed)."""
+        block = cave.param_block_at(self.cave) + cave.CALLS_OFFSET + index * 8
+        return (
+            self.vm.read32(block),
+            self.vm.read32(block + 4),
+        )
 
     def block(self) -> dict:
         return cave.read_block(_Reader(self.vm), self.cave)
@@ -51,6 +65,148 @@ class _Reader:
 
     def read_bytes(self, addr: int, length: int) -> bytes:
         return self.vm.read_bytes(addr, length)
+
+
+class TestCalls(unittest.TestCase):
+    """Calling the game's own functions: the cave's second list.
+
+    A write can set state; it cannot *construct* anything. These tests are about
+    the one mechanism that can -- and about the two properties that keep it from
+    being dangerous: a call fires once per refill rather than once per frame, and
+    the interrupted function still sees its own arguments.
+    """
+
+    def setUp(self) -> None:
+        self.h = CaveHarness()
+        self.fn = 0x001D8000  # a "game function" the simulator will call and return from
+
+    def test_a_call_reaches_the_function_with_its_argument(self) -> None:
+        self.h.set_entries([], calls=[cave.call(self.fn, 7)])
+        result = self.h.call(extra_externals=(self.fn,))
+        called = [(c.callee, c.a0) for c in result.calls]
+        self.assertIn((self.fn, 7), called)
+        self.assertEqual(called[-1], (self.h.callee, 0), "the displaced callee still runs last")
+
+    def test_a_call_fires_once_per_refill_not_once_per_frame(self) -> None:
+        # The whole reason a call entry is consumed: a spawn function that runs at
+        # 60 Hz would create sixty partners a second.
+        self.h.set_entries([], calls=[cave.call(self.fn, 1)])
+        first = self.h.call(extra_externals=(self.fn,))
+        second = self.h.call(extra_externals=(self.fn,))
+        third = self.h.call(extra_externals=(self.fn,))
+        self.assertEqual([c.callee for c in first.calls].count(self.fn), 1)
+        self.assertEqual([c.callee for c in second.calls].count(self.fn), 0)
+        self.assertEqual([c.callee for c in third.calls].count(self.fn), 0)
+        # Consumed: the function word is zeroed, which is what "empty slot" means.
+        # The argument is left alone -- rewriting it would cost an instruction for
+        # no information.
+        self.assertEqual(self.h.call_slot(0)[0], 0)
+
+    def test_a_refill_re_arms_a_consumed_call(self) -> None:
+        self.h.set_entries([], calls=[cave.call(self.fn, 1)])
+        self.h.call(extra_externals=(self.fn,))
+        self.h.set_entries([], calls=[cave.call(self.fn, 2)])  # the watchdog refills
+        result = self.h.call(extra_externals=(self.fn,))
+        self.assertEqual([c.a0 for c in result.calls if c.callee == self.fn], [2])
+
+    def test_an_indirect_argument_is_read_at_call_time(self) -> None:
+        source = 0x00160000
+        self.h.vm.write32(source, 0x1234)
+        self.h.set_entries([], calls=[cave.call_read(self.fn, source)])
+        result = self.h.call(extra_externals=(self.fn,))
+        self.assertEqual([c.a0 for c in result.calls if c.callee == self.fn], [0x1234])
+
+    def test_an_empty_slot_is_skipped_rather_than_ending_the_list(self) -> None:
+        # Consuming a call leaves a hole, and the watchdog refills around it: a call
+        # it has already made is not re-queued, but a new one is appended behind the
+        # hole. If the hole ended the list, that new call would never fire.
+        block = cave.param_block_at(self.h.cave) + cave.CALLS_OFFSET
+        self.h.vm.write_bytes(block, cave.encode_calls([(self.fn, 1)]))
+        self.h.call(extra_externals=(self.fn,))
+        self.assertEqual(self.h.call_slot(0)[0], 0, "slot 0 should be consumed")
+        # A refill that writes the same list minus the fired call, plus a new one.
+        # The hole is hand-packed because encode_calls() refuses a zero function --
+        # that refusal protects the host API, while this block simulates the *game's*
+        # memory after a consumption.
+        self.h.vm.write_bytes(block, struct.pack("<IIII", 0, 0, self.fn + 4, 2) + b"\x00" * 8)
+        result = self.h.call(extra_externals=(self.fn, self.fn + 4))
+        self.assertEqual(
+            [(c.callee, c.a0) for c in result.calls if c.callee in (self.fn, self.fn + 4)],
+            [(self.fn + 4, 2)],
+        )
+
+    def test_several_calls_fire_in_one_refill_in_order(self) -> None:
+        calls = [cave.call(self.fn + i * 4, i) for i in range(3)]
+        self.h.set_entries([], calls=calls)
+        result = self.h.call(extra_externals=tuple(f for f, _ in calls))
+        seen = [c.callee for c in result.calls if c.callee != self.h.callee]
+        self.assertEqual(seen, [self.fn, self.fn + 4, self.fn + 8])
+
+    def test_the_interrupted_function_still_sees_its_arguments(self) -> None:
+        # The displaced function is called *by* the cave, at the end, with the
+        # argument registers the game put there. A call entry that trashed them
+        # would corrupt whatever the game's own per-frame function was about to do.
+        self.h.set_entries([], calls=[cave.call(self.fn, 0x99)])
+        self.h.vm.set_reg("a0", 0xAAAAAAAA)
+        self.h.vm.set_reg("a1", 0xBBBBBBBB)
+        self.h.vm.set_reg("a2", 0xCCCCCCCC)
+        self.h.vm.set_reg("a3", 0xDDDDDDDD)
+        result = self.h.call(extra_externals=(self.fn,))
+        callee_call = [c for c in result.calls if c.callee == self.h.callee][-1]
+        self.assertEqual(callee_call.a0, 0xAAAAAAAA)
+        self.assertEqual(self.h.vm.regs[REG["a1"]], 0xBBBBBBBB)
+        self.assertEqual(self.h.vm.regs[REG["a2"]], 0xCCCCCCCC)
+        self.assertEqual(self.h.vm.regs[REG["a3"]], 0xDDDDDDDD)
+
+    def test_the_call_region_is_bounded(self) -> None:
+        # Memory past the call region is not ours: a stale block must not turn into
+        # a call into whatever happens to be there.
+        block = cave.param_block_at(self.h.cave) + cave.CALLS_OFFSET
+        payload = bytearray()
+        for i in range(cave.MAX_CALLS):
+            payload += struct.pack("<II", self.fn + i * 4, i)
+        self.h.vm.write_bytes(block, bytes(payload))  # no terminator, region full
+        self.h.vm.write32(block + cave.MAX_CALLS * 8, self.fn + 0x1000)  # just past the end
+        # Every function in the payload has to be declared, or the VM would run off
+        # into unmapped code instead of returning -- which is what a real console
+        # would do too, and the reason the docs insist on measuring the function.
+        everything = tuple(self.fn + i * 4 for i in range(cave.MAX_CALLS)) + (self.fn + 0x1000,)
+        result = self.h.call(extra_externals=everything)
+        callees = [c.callee for c in result.calls]
+        self.assertEqual(callees.count(self.fn), 1)
+        self.assertNotIn(self.fn + 0x1000, callees)
+        self.assertEqual(len([c for c in callees if self.fn <= c < self.fn + cave.MAX_CALLS * 4]), cave.MAX_CALLS)
+
+    def test_the_layout_keeps_the_two_lists_apart(self) -> None:
+        self.assertGreaterEqual(cave.CALLS_OFFSET, cave.ENTRIES_OFFSET + 8 * cave.MAX_ENTRIES)
+        self.assertLessEqual(cave.CALLS_END, cave.PARAM_BLOCK_SIZE)
+
+    def test_a_full_call_region_leaves_room_for_the_writes(self) -> None:
+        # Both lists at once: 40 writes and 16 calls in one block image.
+        entries = [cave.const(0x00200000 + 4 * i, i + 1) for i in range(cave.MAX_ENTRIES)]
+        calls = [cave.call(self.fn + 4 * i, i) for i in range(cave.MAX_CALLS)]
+        block = cave.encode_block(entries, calls=calls)
+        self.assertEqual(block[cave.ENTRIES_OFFSET + 4], 1)
+        self.assertEqual(block[cave.CALLS_OFFSET + 4], 0)
+
+    def test_calls_cannot_be_smuggled_past_the_budget(self) -> None:
+        too_many = [cave.call(self.fn, 0)] * (cave.MAX_CALLS + 1)
+        with self.assertRaises(ValueError):
+            cave.encode_calls(too_many)
+        with self.assertRaises(ValueError):
+            cave.encode_calls([(0, 0)])
+        with self.assertRaises(ValueError):
+            cave.call(self.fn, 0x80000000)
+        with self.assertRaises(ValueError):
+            cave.call_read(self.fn, 0x80000000)
+
+    def test_calls_count_towards_the_applied_readout(self) -> None:
+        # `applied` is the evidence that the block did something this tick, and it
+        # is what the watchdog prints. A tick that only made calls must not look
+        # like a tick that did nothing.
+        self.h.set_entries([cave.const(0x00200000, 1)], calls=[cave.call(self.fn, 1)])
+        self.h.call(extra_externals=(self.fn,))
+        self.assertEqual(self.h.block()["applied"], 2)
 
 
 class TestCaveShape(unittest.TestCase):

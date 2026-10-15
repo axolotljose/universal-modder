@@ -28,12 +28,23 @@ parameter block. Want new behaviour? Change the Python, not the machine code.
             +0x04  frame tick   u32  incremented in-game, read as a liveness proof
             +0x08  max entries  u32
             +0x0C  applied      u32  how many entries ran on the last tick
-            +0x10  entries[]    (addr u32, value u32) * max entries, 0-terminated
+            +0x10  writes[]     (addr u32, value u32) * MAX_ENTRIES, 0-terminated
+            +0x150 calls[]      (function u32, argument u32) * MAX_CALLS, consumed
 
 An entry's value word is either a small constant, or -- when bit 31 is set -- the
 address of a word to copy from. That one flag is what lets a rule like "player
 two stands where player one stands" run entirely inside the game, at frame rate,
 with no host process involved. See ``copy()`` and ``const()``.
+
+The second list is for the cases where a write is not enough. Some state cannot be
+set by storing a word: a second actor may have to be *constructed*, a view mode may
+live behind a function that also rebuilds the viewport rectangles, a pad may only
+bind through a setter. PINE cannot call a function; the cave can. A call entry is
+``(address of a function, its single $a0 argument)``, and the argument may itself be
+indirect (bit 31 set: read the word at that address). The cave **consumes** a call
+entry -- it zeroes the slot after calling -- so a refilled list fires each call
+once per refill rather than once per frame, which is the difference between
+spawning a partner and spawning sixty of them a second. See ``call()``.
 """
 
 from __future__ import annotations
@@ -46,14 +57,28 @@ from .mips import NOP, Program, load_immediate
 
 MAGIC = b"AE3C"
 CAVE_CODE_SIZE = 0x1C0
-# 0x180 is 46 entry slots: the mandatory writes (split, actor count, partner flag,
-# character ids, pad ports, actives) are about ten, and the optional sets -- the
-# tether, the per-view HUD, the per-view camera targets -- can add a dozen more.
-# The block is still one allocation inside the free-RAM search, so the only cost
-# of the headroom is 0x80 more bytes of RAM nobody was using.
-PARAM_BLOCK_SIZE = 0x180
+# The block is one allocation inside the free-RAM search, so its size costs nothing
+# but bytes of RAM nobody was using -- and running out of *slots* is a much worse
+# failure than using 0x200 of a 32 MB console.
+#
+# 40 write slots: the mandatory writes (split, actor count, partner flag, character
+# ids, pad ports, actives) are about ten, and the optional sets -- the tether, the
+# per-view HUD, the viewport rectangles, the camera targets -- have been measured at
+# 35 in a fully configured install.
+#
+# 16 call slots, at a fixed offset so both loops have a bound they can check without
+# a counter in a register the called function is free to trash.
+PARAM_BLOCK_SIZE = 0x200
 ENTRIES_OFFSET = 0x10
 MAX_ENTRIES = 40
+# The entry list is zero *terminated*, so a full list of 40 entries occupies 41
+# slots. The call region starts after that terminator, not on top of it: a call
+# slot that shares eight bytes with the entry terminator is a call that is silently
+# wiped by the frame that fills the entry budget.
+CALLS_OFFSET = ENTRIES_OFFSET + 8 * (MAX_ENTRIES + 1)  # 0x158
+MAX_CALLS = 16
+CALLS_SIZE = 8 * MAX_CALLS
+CALLS_END = CALLS_OFFSET + CALLS_SIZE                  # 0x1D8
 
 TICKS = "ticks"
 
@@ -110,8 +135,9 @@ def build_interpreter(
 ) -> Interpreter:
     """Assemble the per-frame interpreter.
 
-    Clobbers only ``$at`` and ``$t0..$t5`` (every one of them caller-saved, so the
-    interrupted function cannot care) plus two words of stack for ``$ra``.
+    Clobbers only ``$at`` and ``$t0..$t6`` (every one of them caller-saved, so the
+    interrupted function cannot care) plus nine words of stack: ``$ra``, the four
+    argument registers, the block base and the call cursor.
     """
     if cave % 4 or site % 4 or callee % 4:
         raise ValueError("cave, site and callee addresses must all be word aligned")
@@ -120,12 +146,21 @@ def build_interpreter(
     p = Program(base=cave)
     p.label("cave")
 
-    # --- prologue: keep the caller's $ra alive across our own call -------------
-    p.emit(mips.addiu("sp", "sp", -0x18))
+    # --- prologue: keep what the interrupted function expects -------------------
+    # $ra has to survive our own call to the callee, and $a0-$a3 have to survive
+    # every call *we* make on the mod's behalf: they are the arguments the game
+    # passed to the function we displaced, and that function is still expecting
+    # them when we finally call it.
+    p.emit(mips.addiu("sp", "sp", -0x30))
     p.emit(mips.sw("ra", 0x14, "sp"))
+    p.emit(mips.sw("a0", 0x18, "sp"))
+    p.emit(mips.sw("a1", 0x1C, "sp"))
+    p.emit(mips.sw("a2", 0x20, "sp"))
+    p.emit(mips.sw("a3", 0x24, "sp"))
 
     # --- load the parameter block base into $t0 -------------------------------
     p.emit(load_immediate("t0", par))
+    p.emit(mips.sw("t0", 0x10, "sp"))        # a called function may trashed $t0
 
     # --- tick the frame counter (also our liveness oracle) --------------------
     p.emit(mips.lw("t1", 0x04, "t0"))
@@ -134,7 +169,7 @@ def build_interpreter(
 
     # --- entry list ----------------------------------------------------------
     p.emit(mips.lw("t5", 0x08, "t0"))       # $t5 = remaining budget
-    p.emit(mips.addiu("t2", "t0", 0x10))    # $t2 = cursor
+    p.emit(mips.addiu("t2", "t0", ENTRIES_OFFSET))
     p.emit(mips.sw("zero", 0x0C, "t0"))     # applied = 0
 
     p.label("loop")
@@ -170,11 +205,62 @@ def build_interpreter(
 
     p.label("done_loop")
 
+    # --- the call list --------------------------------------------------------
+    # Everything here has to survive an arbitrary function call, so the cursor
+    # lives on the stack and the bounds are recomputed from the block base after
+    # every call. A called function is free to trash every $t register, and one of
+    # them will.
+    p.emit(mips.addiu("t2", "t0", CALLS_OFFSET))
+    p.emit(mips.sw("t2", 0x28, "sp"))
+
+    p.label("call_loop")
+    p.emit(mips.lw("t0", 0x10, "sp"))       # base, again
+    p.emit(mips.lw("t2", 0x28, "sp"))       # cursor
+    p.emit(mips.addiu("t1", "t0", CALLS_END))
+    p.emit(mips.sltu("t6", "t2", "t1"))     # inside the call region?
+    p.beq("t6", "zero", "call_done")
+    p.emit(NOP)
+    p.emit(mips.lw("t3", 0x00, "t2"))       # the function
+    p.emit(mips.lw("t4", 0x04, "t2"))       # its argument (bit 31 = read it)
+    p.emit(mips.addiu("t1", "t2", 8))
+    p.emit(mips.sw("t1", 0x28, "sp"))       # advance now: every path below re-enters
+    p.beq("t3", "zero", "call_loop")        # an empty slot is skipped, not a terminator
+    p.emit(NOP)
+    p.emit(mips.sw("zero", 0x00, "t2"))     # consume: one call per refill, not per frame
+    p.bltz("t4", "call_indirect")
+    p.emit(NOP)
+    p.emit(mips.or_("a0", "zero", "t4"))
+    p.b("call_invoke")
+    p.emit(NOP)
+
+    p.label("call_indirect")
+    p.emit(mips.sll("t4", "t4", 1))
+    p.emit(mips.srl("t4", "t4", 1))
+    p.emit(mips.lw("a0", 0x00, "t4"))       # pass a live value: an actor slot, a handle
+
+    p.label("call_invoke")
+    p.emit(mips.jalr("ra", "t3"))
+    p.emit(NOP)
+    # Count the call against the same readout as the writes, so `applied` is still
+    # "everything the block did this tick" -- and so a call proves liveness too.
+    p.emit(mips.lw("t0", 0x10, "sp"))
+    p.emit(mips.lw("t1", 0x0C, "t0"))
+    p.emit(mips.addiu("t1", "t1", 1))
+    p.emit(mips.sw("t1", 0x0C, "t0"))
+    p.b("call_loop")
+    p.emit(NOP)
+
+    p.label("call_done")
+    p.emit(mips.lw("a0", 0x18, "sp"))
+    p.emit(mips.lw("a1", 0x1C, "sp"))
+    p.emit(mips.lw("a2", 0x20, "sp"))
+    p.emit(mips.lw("a3", 0x24, "sp"))
+
     # --- restore, call the original callee, return to the original caller -----
     p.emit(mips.jal(callee))
     p.emit(NOP)
     p.emit(mips.lw("ra", 0x14, "sp"))
-    p.emit(mips.addiu("sp", "sp", 0x18))
+    p.emit(mips.addiu("sp", "sp", 0x30))
     p.emit(mips.j(site + 8))
     p.emit(NOP)
 
@@ -189,7 +275,7 @@ def build_interpreter(
 
 
 def initial_param_block(max_entries: int = MAX_ENTRIES, magic: bytes = MAGIC) -> bytes:
-    """A quiet block: zero entries, so the cave is harmless until we fill it."""
+    """A quiet block: no writes and no calls, so the cave is harmless until we fill it."""
     if len(magic) != 4:
         raise ValueError("magic must be exactly 4 bytes")
     block = bytearray(PARAM_BLOCK_SIZE)
@@ -229,6 +315,52 @@ def entry_source(value: int) -> int:
     return value & 0x7FFFFFFF
 
 
+def call(fn: int, arg: int = 0) -> tuple[int, int]:
+    """A call entry: call the function at ``fn`` with ``arg`` in ``$a0``.
+
+    Constants only. For "pass whatever is in that word" uses :func:`call_read`.
+    """
+    if arg & 0x80000000:
+        raise ValueError(
+            f"argument {arg:#x} has bit 31 set, which the interpreter reads as an indirect "
+            "argument. Pass a smaller value, or use call_read() if you meant an address."
+        )
+    return fn & 0xFFFFFFFF, arg & 0xFFFFFFFF
+
+
+def call_read(fn: int, source: int) -> tuple[int, int]:
+    """A call entry whose argument is read from memory at call time.
+
+    The useful shape is a handle the game owns: an actor slot, a pointer the stage
+    just allocated, a counter the engine keeps rewriting. Reading it in-game means
+    the function gets the value as it is *now*, not as it was one watchdog pass ago.
+    """
+    if source & 0x80000000:
+        raise ValueError("source address has bit 31 set; it must be a plain EE address")
+    return fn & 0xFFFFFFFF, source | 0x80000000
+
+
+def encode_calls(calls: list[tuple[int, int]], max_calls: int = MAX_CALLS) -> bytes:
+    """Pack (function, argument) pairs into the call region, zero terminated.
+
+    Empty slots are skipped by the interpreter rather than treated as the end of
+    the list, because the cave *consumes* a call when it makes it -- so the region
+    has to be scannable with holes in it.
+    """
+    if len(calls) > max_calls:
+        raise ValueError(
+            f"{len(calls)} calls but the cave's budget is {max_calls}; a refill that needs to "
+            "call more functions than that is doing something the mod was not designed for"
+        )
+    if any(fn == 0 for fn, _ in calls):
+        raise ValueError("function address 0 is an empty slot and cannot be called")
+    out = bytearray()
+    for fn, arg in calls:
+        out += struct.pack("<II", fn & 0xFFFFFFFF, arg & 0xFFFFFFFF)
+    out += b"\x00" * 8
+    return bytes(out)
+
+
 def encode_entries(entries: list[tuple[int, int]], max_entries: int = MAX_ENTRIES) -> bytes:
     """Pack (address, value) pairs, zero terminated, into a full block payload."""
     if len(entries) > max_entries:
@@ -246,19 +378,45 @@ def encode_entries(entries: list[tuple[int, int]], max_entries: int = MAX_ENTRIE
 
 
 def encode_block(
-    entries: list[tuple[int, int]], max_entries: int = MAX_ENTRIES, magic: bytes = MAGIC
+    entries: list[tuple[int, int]],
+    max_entries: int = MAX_ENTRIES,
+    magic: bytes = MAGIC,
+    calls: list[tuple[int, int]] | None = None,
+    max_calls: int = MAX_CALLS,
 ) -> bytes:
     """Full parameter-block image, for the one moment a cave is installed.
 
     The watchdog must **not** use this: it would reset the tick counter that
     proves the hook is alive. Ongoing passes write ``encode_entries`` at
-    ``ENTRIES_OFFSET`` instead.
+    ``ENTRIES_OFFSET`` and ``encode_calls`` at ``CALLS_OFFSET`` instead -- the whole
+    call region every time, which is safe because the host re-sends the calls it has
+    not yet seen the cave consume (see ``CoopMod._settle_calls``).
     """
     block = bytearray(PARAM_BLOCK_SIZE)
     struct.pack_into("<4sIII", block, 0, magic, 0, max_entries, 0)
     payload = encode_entries(entries, max_entries)
     block[ENTRIES_OFFSET : ENTRIES_OFFSET + len(payload)] = payload
+    if calls:
+        call_payload = encode_calls(calls, max_calls)
+        block[CALLS_OFFSET : CALLS_OFFSET + len(call_payload)] = call_payload
     return bytes(block)
+
+
+def read_calls(pine, cave: int) -> list[tuple[int, int]]:
+    """The call slots that are still waiting to be made, in slot order.
+
+    The cave zeroes a slot's function word when it makes that call, so what is left
+    here is exactly "queued, not yet run" -- which is the evidence the host needs to
+    say a call has been made, and the reason it must not re-arm a slot the game has
+    simply not reached yet.
+    """
+    raw = pine.read_bytes(param_block_at(cave) + CALLS_OFFSET, CALLS_SIZE)
+    out: list[tuple[int, int]] = []
+    for i in range(0, len(raw) - 7, 8):
+        fn, arg = struct.unpack_from("<II", raw, i)
+        if fn:
+            out.append((fn, arg))
+    return out
 
 
 def read_block(pine, cave: int, magic: bytes = MAGIC) -> dict:

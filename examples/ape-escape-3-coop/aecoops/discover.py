@@ -335,6 +335,7 @@ class PokeReport:
     site: int
     cave: int
     entries: list[tuple[int, int]]
+    calls: list[tuple[int, int]] = field(default_factory=list)
     ticks: int = 0
     applied: int = 0
     verdict: str = ""
@@ -345,6 +346,7 @@ def poke_entries(
     site: int,
     cave_addr: int,
     entries: list[tuple[int, int]],
+    calls: list[tuple[int, int]] | None = None,
     duration: float = 3.0,
     expected_hz: float | None = None,
     max_entries: int = cave.MAX_ENTRIES,
@@ -363,7 +365,12 @@ def poke_entries(
     * it restores the original instruction and zeroes the cave in a ``finally``,
       so a crash, a Ctrl-C or a bad entry still leaves the game as it was found;
     * it writes only the addresses it was given. There is no "region" mode: a
-      discovery tool that scribbles across memory is how a save file dies.
+      discovery tool that scribbles across memory is how a save file dies;
+    * calls are queued once, not every frame, so "call the actor constructor" is one
+      construction rather than one per frame for three seconds. A call the game
+      refuses to survive (it segfaults, or it loops) is exactly the kind of thing
+      this command exists to find out, and the timer is the difference between
+      finding out and finding out repeatedly.
 
     The return value's tick rate is the evidence that the write actually happened
     every frame rather than once while you were looking away.
@@ -384,6 +391,7 @@ def poke_entries(
         pine.write_bytes(cave_addr, interp.code)
         pine.write_bytes(cave.param_block_at(cave_addr), cave.initial_param_block(max_entries))
         pine.write_bytes(cave.param_block_at(cave_addr) + cave.ENTRIES_OFFSET, cave.encode_entries(entries, max_entries))
+        pine.write_bytes(cave.param_block_at(cave_addr) + cave.CALLS_OFFSET, cave.encode_calls(calls or []))
         pine.write_bytes(site, interp.trampoline)
 
         first = cave.read_block(pine, cave_addr)
@@ -406,8 +414,19 @@ def poke_entries(
     elif abs(hz - target) > max(2.0, target * 0.1):
         verdict = f"called at {hz:.1f} Hz: the writes are not landing every frame"
     else:
-        verdict = f"writing {len(entries)} entries every frame for {duration:.1f}s"
-    return PokeReport(site=site, cave=cave_addr, entries=entries, ticks=ticks, applied=int(second["applied"]), verdict=verdict)
+        bits = [f"writing {len(entries)} entries every frame"]
+        if calls:
+            bits.append(f"calling {len(calls)} function(s) once per refill")
+        verdict = " and ".join(bits) + f" for {duration:.1f}s"
+    return PokeReport(
+        site=site,
+        cave=cave_addr,
+        entries=entries,
+        calls=list(calls or []),
+        ticks=ticks,
+        applied=int(second["applied"]),
+        verdict=verdict,
+    )
 
 
 def probe_is_installed(pine: Pine, site: int, cave_addr: int) -> bool:

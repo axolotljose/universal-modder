@@ -32,12 +32,38 @@ recipe uses them:
 | `discover sweep --from-elf` | Which of these functions runs exactly once per frame? Measured, not guessed. |
 | `discover snapshot` / `discover diff` | What differs between two **states** -- a stage and a minigame, an ordinary view and an enlarged MonkeyCam? |
 | `discover watch` | What differs between two **moments**, in a region you already suspect? |
-| `discover poke` | Which word *does* the thing? Writes candidates every frame for a few seconds, then puts everything back. |
+| `discover poke` | Which word *does* the thing? Writes candidates every frame for a few seconds, then puts everything back. `--call` makes the game *run* a candidate instead (`--call-read` when the function wants the word at an address). |
 
 `poke` is the only one that writes. It refuses to run on top of an installed
 cave, restores the instruction it displaced and zeroes the cave it built, even if
 you interrupt it -- so "try a value and look" is a safe loop rather than a way to
 lose a save.
+
+## Which section a message means
+
+The tool's output and `data/addresses.json` point back here as
+`docs/DISCOVERY.md#<key>`, with the short keys below rather than the full heading
+-- a warning line has to stay readable on a terminal. `aecoops selfcheck` checks
+that every key used anywhere in the tool still resolves to a section.
+
+| key | section |
+|---|---|
+| `frame-counter` | 0 |
+| `frame-hook` | 1 |
+| `actor-table` | 2 |
+| `character-ids` | 3 |
+| `pad-port` | 4 |
+| `view-mode` | 5 |
+| `counts` | 6 |
+| `quota` | 6 |
+| `actor-count` | 6 |
+| `hud` | 7 |
+| `viewports` | 8 |
+| `camera` | 8 |
+| `position` | 9 |
+| `tether-radius` | 9 |
+| `calls` | 10 |
+| `recording` | Recording what you find |
 
 ---
 
@@ -423,6 +449,92 @@ inside the cave. `--no-tether` turns the mirroring off as well as the leash.
 
 ---
 
+## 10. Calls (functions of the game's own)
+
+**Why.** Everything else in the mod *writes*: a value into a word, or a copy of one
+word into another. That is enough for state, and it is not enough for anything the
+game has to *do*. Two examples from this mod's own gap list:
+
+* the second actor may not exist as a structure at all -- a stage that simulates one
+  hero may need its own "add the second player" routine, called once, to build one;
+* the renderer may recompute its viewports every frame from something other than
+  `view_mode`, in which case what is needed is the *setter* that tells it to rebuild,
+  not another write to the same word.
+
+Both are calls. There is no way to make them from outside the emulator: only code
+already running inside the game can call the game.
+
+**What the cave does with a call.** A call entry is two words -- a function address
+and an argument -- and the cave's interpreter calls it with the argument in `$a0`,
+with `$ra` and `$sp` saved, and then goes on to the next entry. The function runs
+inside the game's own frame, on its own stack, with the game's state live. If the
+argument word has **bit 31 set**, the low bits are an address and the *value at that
+address* is passed instead, read at call time -- which is how a spawner gets the
+handle the stage has just allocated rather than a number that was true a quarter of a
+second ago.
+
+**Once, or every refill.** A call marked `once` is made once and then never again:
+the cave zeroes the function word as it calls, and the host re-sends only the calls it
+has not yet *seen* the cave consume (it reads the call region back and looks for them).
+A frozen `.pnach` has no host at all, so there every call fires once, on the first
+frame of the first stage -- which is the right shape for "construct the partner when
+the stage starts" and the wrong shape for everything else, which is why the export
+warns about repeating calls. Leave `once` at its default unless the function is
+genuinely idempotent: the difference is one partner or sixty a second.
+
+**Finding one.** You are looking for a function with two properties: it is called
+from the per-frame path (or from a place you can reach), and calling it *does* the
+thing. The worked example is the view-mode setter, because you already have a value
+to try:
+
+```bash
+# 1. Find the word the setter writes. Walk into a two-player minigame and diff:
+aecoops discover snapshot before.json
+# ... enter the minigame ...
+aecoops discover snapshot after.json
+aecoops discover diff before.json after.json --kind changed --limit 40
+
+# 2. Find what writes it: Ghidra, or a breakpoint on the word, or -- if you have a
+#    function map -- the candidates whose code stores to it. Any function that both
+#    appears in that list and runs once per frame is a candidate.
+
+# 3. Call it, once, for four seconds, and watch the screen:
+aecoops discover poke --call 0x00123456=1 --duration 4
+
+# 4. Put the answer in the worksheet. `arg` is the value the setter wants; if the
+#    setter should read a handle instead, set bit 31 on the address:
+aecoops set calls.set_view_mode.addr=0x00123456
+aecoops set calls.set_view_mode.arg=1
+aecoops set calls.set_view_mode.once=false
+```
+
+`discover poke --call FUNCTION=ARG` (or `--call-read FUNCTION=SOURCE` to pass the
+word at an address, which is what a routine that wants a handle expects) is
+deliberately awkward about the argument: a
+call to an address with a made-up argument is a jump into code with garbage in a
+register, and the game is entitled to crash. So pass `0` if the function takes none
+(this is the common case for a setter), and only pass a real value when you have seen
+the function's parameter in a disassembly or in a register dump. **The mod itself is
+stricter still**: a call with an address and no argument is refused outright, and the
+refusal is printed once (see `aecoops doctor` for the standing list). An unmeasured
+call -- neither address nor argument -- is simply not made, which is why the shipped
+worksheet has `calls.spawn_partner` and `calls.set_view_mode` sitting at `NOT FOUND
+YET` doing nothing.
+
+**What it cannot do.** A call is not a sandbox. The function runs with whatever the
+game has in memory at that moment, so a call to a routine that expects a loaded stage
+will misbehave in a menu. And a call to something that *constructs* has to be made
+once per stage, not once per session -- the mod's `once` bookkeeping is per install,
+so `eject` and reinstall (or reload the stage, if you are re-running `play`) when you
+change stages. Restarting the host against a cave that is still installed is the one
+case the mod resolves by assumption: a one-shot call it cannot see waiting in the
+region is treated as already made and left alone, because a second hero who never
+spawns is a reload while two of them is a bug. `install` says so when it happens.
+That is the honest bound on this feature, and the reason it is the last of the ten
+recipes rather than the first.
+
+---
+
 ## Recording what you find
 
 ```bash
@@ -440,6 +552,10 @@ aecoops set globals.viewport_count.addr=0x1a2b3c8
 aecoops set structs.actor.fields.char_id.offset=0x38
 aecoops set globals.frame_hook.addr=0x00123456
 aecoops set globals.frame_hook.verified=2026-10-15
+# calls (section 10): both halves or nothing -- a function plus the argument to
+# call it with. Bit 31 on `arg` means "read the argument at this address".
+aecoops set calls.spawn_partner.addr=0x00160000 calls.spawn_partner.arg=1
+aecoops set calls.set_view_mode.addr=0x00123480 calls.set_view_mode.arg=1 calls.set_view_mode.once=false
 ```
 
 Every one of these writes into `data/addresses.json`, in the same shape the file
@@ -461,7 +577,8 @@ aecoops play --hud shared      # co-op
 that list is the whole to-do, in the order the rest of this page explains it.
 
 Once a configuration works, freeze it (the `.pnach` carries every write the live
-run would make, the HUD and the cameras included):
+run would make, the HUD and the cameras included, and any calls -- which in a frozen
+patch fire once, at the first stage frame):
 
 ```bash
 aecoops export-pnach --hud per-view --out patches/SCUS-97501.pnach

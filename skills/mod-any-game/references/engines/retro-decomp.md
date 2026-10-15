@@ -76,6 +76,21 @@ decomp can take billions of tokens.
     write nothing unless all four fields are measured: an `x`/`y` move with a stale
     `w`/`h` draws the old view in a new place, which reads as a broken renderer
     rather than a missing number.
+  - **A write sets state; only the game's own code constructs anything.** There is a
+    ceiling to memory-poking that shows up at the same place in every project: you can
+    force `actor_count` to two, but if the engine never built a second actor structure,
+    there is no second actor -- and re-writing a "view mode" word does nothing if the
+    renderer recomputes its layout from something else. Both are *doings*, and the fix is
+    to call the function the game calls: queue the address plus one argument for a small
+    in-game stub to `jal`, with the argument already in `$a0`. Three rules make that safe.
+    Take a call **once**, not every frame -- a call is the opposite of a write, and
+    "spawn the partner" run sixty times a second is sixty partners: have the stub consume
+    the slot (zero the function word) and have the host re-send only the calls it has read
+    back as *not yet* consumed, which is also the only honest evidence that a call
+    happened. Refuse a call whose argument has not been measured -- jumping into code you
+    found while handing it a value you invented is how a stage crashes -- and make the
+    function word the only part of the slot the stub clears, so the host can tell "queued"
+    from "done" at a glance.
   - **Gate every optional write on a measured address.** A mod that pokes state the engine
     owns (HUD placement, camera targets, viewport count) should degrade mode by mode -- and
     say which field it is waiting on -- rather than guessing a plausible number. Guessing

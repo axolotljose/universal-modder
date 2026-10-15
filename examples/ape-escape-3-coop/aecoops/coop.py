@@ -130,14 +130,19 @@ class TickReport:
     applied: int = 0
     wrote: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
     info: EmuInfo | None = None
 
     def summary(self) -> str:
         state = "ok" if self.ok else "PROBLEM"
+        # `applied` counts writes *and* calls: a tick that only made calls must not
+        # read as a tick that did nothing.
         bits = [f"tick {self.tick}", f"{self.applied} writes", state]
         if self.wrote:
             bits.append(", ".join(self.wrote))
         text = " · ".join(bits)
+        for note in self.notes:
+            text += f"\n  + {note}"
         if self.warnings:
             text += "\n  ! " + "\n  ! ".join(self.warnings)
         return text
@@ -190,19 +195,41 @@ class Entry:
 
 @dataclass
 class Plan:
-    """The frame's intended writes, in the order they will be applied."""
+    """The refill's intended writes and calls, in the order they are applied."""
 
     entries: list[Entry] = field(default_factory=list)
+    calls: list[tuple[int, int]] = field(default_factory=list)
+    call_labels: list[str] = field(default_factory=list)
+    #: Labels of the calls that are one-shot. The writer arms these *after* the
+    #: block carrying them is safely in the game: a call marked spent before it was
+    #: ever handed over is a partner who never spawns.
+    calls_once: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
     def values(self) -> list[tuple[int, int]]:
         return [(e.addr, e.value) for e in self.entries]
 
+    def describe_calls(self) -> str:
+        if not self.calls:
+            return "no calls"
+        return ", ".join(self.call_labels)
+
     def labels(self) -> list[str]:
         return [e.label for e in self.entries]
 
-    def trimmed_to_budget(self, budget: int = cave.MAX_ENTRIES) -> "Plan":
+    def trimmed_to_budget(
+        self, budget: int = cave.MAX_ENTRIES, call_budget: int = cave.MAX_CALLS
+    ) -> "Plan":
         """Keep every essential entry, then optional ones in order, up to ``budget``."""
+        if len(self.calls) > call_budget:
+            kept = self.calls[:call_budget]
+            dropped = self.call_labels[call_budget:]
+            self.calls, self.call_labels = kept, self.call_labels[:call_budget]
+            self.calls_once = [n for n in self.calls_once if n in self.call_labels]
+            self.warnings.append(
+                f"{len(dropped)} calls did not fit the cave's {call_budget}-call budget: "
+                + ", ".join(dropped)
+            )
         if len(self.entries) <= budget:
             return self
         kept = [e for e in self.entries if e.essential]
@@ -214,6 +241,9 @@ class Plan:
             dropped = dropped[room:]
         out = Plan(
             entries=kept + [e for e in self.entries if not e.essential][:room],
+            calls=list(self.calls),
+            call_labels=list(self.call_labels),
+            calls_once=list(self.calls_once),
             warnings=list(self.warnings),
         )
         out.warnings.append(
@@ -249,7 +279,14 @@ class CoopMod:
         self._independent_at: float | None = None
         self._hud_plan = hud.HudPlan(mode=self.config.hud_mode)
         self._view_plan = views.ViewPlan()
+        # One-shot calls. `_calls_pending` maps a name to the pair the cave was
+        # given and has not been seen to consume; `_calls_done` is what the cave has
+        # been *observed* to consume, which is the only thing that stops the host
+        # re-sending it. The evidence is the block itself: see `_settle_calls`.
+        self._calls_pending: dict[str, tuple[int, int]] = {}
+        self._calls_done: set[str] = set()
         self._notes_seen: dict[str, str] = {}
+        self._notes_reported: set[str] = set()
         # Where signatures are looked for. None means "everywhere the worksheet's
         # defaults cover"; a stage-only signature is much faster to find inside one.
         self._scan_ranges: list[tuple[int, int]] | None = None
@@ -270,6 +307,9 @@ class CoopMod:
         if ranges is not None:
             self._scan_ranges = list(ranges)
         self._resolved = self.table.resolve_all(self.pine, self._scan_ranges)
+        # A fresh resolve is a fresh look at the worksheet, so notes it produces are
+        # new information again (that is what a reinstall after editing the JSON is).
+        self._notes_reported.clear()
         for name, struct in self.table.structs.items():
             if struct.base.addr is not None or not struct.base.signature:
                 continue
@@ -331,6 +371,12 @@ class CoopMod:
         self._original_site = self.pine.read_bytes(site, 4)
         self._interpreter = cave.build_interpreter(cave_addr, site, cave.callee_of_jal(word, site))
 
+        if not self._is_installed():
+            # A fresh cave is a fresh session: whatever the previous one was told to
+            # call, this one has not called.
+            self._calls_pending.clear()
+            self._calls_done.clear()
+
         # Build the plan before anything is written: it decides both the entries to
         # arm and the warnings to report, and it reads memory rather than writing.
         plan = self.plan()
@@ -341,6 +387,13 @@ class CoopMod:
             report.ok = True
             report.cave, report.site, report.callee = cave_addr, site, self._interpreter.callee
             report.notes.append("cave was already installed; left as it is")
+            spent = self._adopt_installed_calls()
+            if spent:
+                report.notes.append(
+                    f"a cave was already here, so {len(spent)} one-shot call(s) are left alone "
+                    "rather than re-armed: " + ", ".join(sorted(spent)) + ". If the stage was "
+                    "reloaded and they need to happen again, eject and install again."
+                )
             report.notes.append(f"hud: {self._hud_plan.describe()}")
             report.notes.append(self._view_plan.describe())
             report.notes.extend(f"  {n}" for n in self._view_plan.notes)
@@ -353,15 +406,22 @@ class CoopMod:
         # during the first frame after the first watchdog pass.
         self.pine.write_bytes(cave_addr, self._interpreter.code)
         self.pine.write_bytes(
-            cave.param_block_at(cave_addr), cave.encode_block(plan.values(), cave.MAX_ENTRIES)
+            cave.param_block_at(cave_addr),
+            cave.encode_block(plan.values(), calls=plan.calls),
         )
         self.pine.write_bytes(site, self._interpreter.trampoline)
+        self._arm_calls(plan)
 
         report.ok = True
         report.cave = cave_addr
         report.site = site
         report.callee = self._interpreter.callee
         report.notes.append(f"{len(plan.entries)} writes armed")
+        if plan.calls:
+            report.notes.append(
+                f"{len(plan.calls)} call(s) queued: {plan.describe_calls()} "
+                "(they fire on the next frame the hook runs)"
+            )
         report.notes.append(f"hud: {self._hud_plan.describe()}")
         report.notes.append(self._view_plan.describe())
         report.notes.extend(f"  {n}" for n in self._view_plan.notes)
@@ -424,6 +484,10 @@ class CoopMod:
         """
         table, cfg = self.table, self.config
         out = Plan()
+
+        # Anything `resolve()` noticed out of band (a struct base that could not be
+        # found) belongs to this report.
+        out.warnings.extend(self._drain_notes())
 
         globals_ = self._resolved
 
@@ -513,12 +577,22 @@ class CoopMod:
         out.warnings.extend(hud_plan.warnings)
         self._hud_plan = hud_plan
 
-        # Notes about missing measurements surface on the pass after they are
-        # first noticed, and only once.
-        out.warnings.extend(self._notes_seen.values())
-        self._notes_seen.clear()
+        # 8. the game's own functions, for what a write cannot do
+        out.calls, out.call_labels, out.calls_once = self._declared_calls()
+
+        # ...and anything this pass noticed, in this pass's report: a note is a fact
+        # about the worksheet, and the worksheet does not change while the mod runs,
+        # so saying it once is the whole point -- see `_note_once`.
+        out.warnings.extend(self._drain_notes())
 
         return out.trimmed_to_budget()
+
+    def _drain_notes(self) -> list[str]:
+        """The notes that have not been said yet, oldest first."""
+        fresh = [text for key, text in self._notes_seen.items() if key not in self._notes_reported]
+        self._notes_reported.update(self._notes_seen)
+        self._notes_seen.clear()
+        return fresh
 
     def entries(self) -> list[tuple[int, int]]:
         """The (address, value) pairs the game should re-apply this frame.
@@ -528,6 +602,150 @@ class CoopMod:
         oscillating.
         """
         return self.plan().values()
+
+    def _declared_calls(self) -> tuple[list[tuple[int, int]], list[str], list[str]]:
+        """Calls from the worksheet: the ones the user measured, and nothing else.
+
+        An unmeasured call is not a warning: the mod runs without it, and `doctor`
+        lists it alongside every other blank. A call that *is* measured but whose
+        argument is missing is refused loudly, because guessing an argument to a
+        function that constructs things is how a stage crashes.
+        """
+        wanted = [(spec, self._call_pair(spec)) for spec in self.table.calls]
+        # A call declared both ways with the same function and argument cannot be
+        # told apart in the cave's own consumption, so the one-shot half would be
+        # re-sent every refill for ever -- the same function, twice a frame. Refuse
+        # it instead: one of the two declarations is a mistake.
+        repeated = {pair: spec.name for spec, pair in wanted if pair and not spec.once}
+        calls: list[tuple[int, int]] = []
+        labels: list[str] = []
+        once: list[str] = []
+        for spec, pair in wanted:
+            if pair is None:
+                continue
+            if not spec.once:
+                calls.append(pair)
+                labels.append(spec.name)
+                continue
+            if spec.name in self._calls_done:
+                continue
+            if pair in repeated:
+                self._note_once(
+                    f"call:{spec.name}",
+                    f"calls.{spec.name} is the same function and argument as the repeating call "
+                    f"{repeated[pair]!r}, so whether the cave has run it cannot be told apart and it "
+                    "would be sent every refill; drop one of the two, or set once=false "
+                    "(docs/DISCOVERY.md#calls)",
+                )
+                continue
+            calls.append(pair)
+            labels.append(spec.name)
+            once.append(spec.name)
+        return calls, labels, once
+
+    def _call_pair(self, spec) -> tuple[int, int] | None:
+        """One worksheet call as the (function, argument) pair the cave takes.
+
+        ``None`` means there is nothing to call -- either the call is a blank in the
+        worksheet, which is normal, or it is half measured, which is not and is said
+        so here, once.
+        """
+        if spec.addr is None and spec.arg is None:
+            return None
+        if not spec.ready:
+            self._note_once(
+                f"call:{spec.name}",
+                f"calls.{spec.name} has "
+                + ("an address" if spec.addr is not None else "an argument")
+                + " but not both, so it is not called (docs/DISCOVERY.md#calls)",
+            )
+            return None
+        argument = int(spec.arg)
+        if argument & 0x80000000:
+            # An indirect argument, in the same spelling an entry value uses: bit 31
+            # means "read the word at this address and pass what is there". A spawner
+            # wants the handle the stage has just allocated, not the number it held
+            # one watchdog pass ago.
+            source = argument & 0x7FFFFFFF
+            if not source:
+                self._note_once(
+                    f"call:{spec.name}",
+                    f"calls.{spec.name}.arg is an indirect argument reading address 0, "
+                    "which is not a handle; clear bit 31 or point it at the word "
+                    "(docs/DISCOVERY.md#calls)",
+                )
+                return None
+            return cave.call_read(int(spec.addr), source)
+        return cave.call(int(spec.addr), argument)
+
+    def _arm_calls(self, plan: Plan) -> None:
+        """Remember what the refill just handed over: it is pending until seen run.
+
+        Called by the writer, after the write returned -- not by `plan()`, which
+        builds a plan for `status` and for the dry runs too, and a call marked spent
+        by a plan that was never written is a call that never happens.
+        """
+        pairs = dict(zip(plan.call_labels, plan.calls))
+        for name in plan.calls_once:
+            self._calls_pending.setdefault(name, pairs[name])
+
+    def _settle_calls(self, report: TickReport) -> None:
+        """Note the one-shot calls the cave has made, from the block itself.
+
+        A one-shot call cannot be written once and forgotten: the host refills the
+        whole call region every pass, so a call the game has not reached yet would be
+        wiped by the refill that follows -- and a call written twice is sixty
+        partners instead of one. The way out is that the cave *consumes* a call when
+        it makes it, so the region read back before the refill says exactly which
+        calls are still waiting. Until a call stops appearing there it is re-sent; the
+        moment it disappears, it has been made, and it is said so once.
+
+        (The window where this is not airtight: a frame that lands between this read
+        and the refill write could consume a call that the same refill then re-sends.
+        That is a sub-millisecond window per call, only while a call is still
+        pending, and the alternative -- trusting a write the game has not run yet --
+        loses calls outright.)
+        """
+        if not self._calls_pending:
+            return
+        try:
+            waiting = cave.read_calls(self.pine, self._cave)
+        except PineError:
+            return  # cannot see the region: keep re-sending rather than claim it ran
+        for name, pair in sorted(self._calls_pending.items()):
+            if pair not in waiting:
+                report.notes.append(f"called {name}")
+                self._calls_done.add(name)
+        for name in self._calls_done:
+            self._calls_pending.pop(name, None)
+
+    def _adopt_installed_calls(self) -> set[str]:
+        """Take an installed cave's word for what it has already called. Returns the names.
+
+        This is the attach case: another host process installed the cave, or this one
+        did and exited, and a one-shot call that is *not* in the call region now may
+        have been made already -- there is no way to tell. Spawning a partner twice is
+        worse than not spawning one, so a call this process never armed is treated as
+        spent. A call the previous session left queued in the region is adopted as
+        pending, because the refill would otherwise wipe it before the game reaches it.
+        """
+        spent: set[str] = set()
+        try:
+            waiting = cave.read_calls(self.pine, self._cave)
+        except PineError:
+            return spent
+        for spec in self.table.calls:
+            if not spec.once:
+                continue
+            pair = self._call_pair(spec)
+            if pair is None:
+                continue
+            if pair in waiting:
+                self._calls_pending.setdefault(spec.name, pair)
+            else:
+                self._calls_done.add(spec.name)
+                spent.add(spec.name)
+        return spent
 
     def _view_targets(self) -> tuple[int, int]:
         """Which actor slot each view follows: view 1 shows `camera_follows`' hero."""
@@ -629,9 +847,11 @@ class CoopMod:
         """Remember a missing measurement; it is reported once, on the next pass.
 
         Repeating the same line in every watchdog report would bury the warnings
-        that are actually new, and this one cannot change while the mod runs.
+        that are actually new, and this one cannot change while the mod runs -- so it
+        is said once and remembered as said, even though the condition behind it is
+        still true on the next pass.
         """
-        if key not in self._notes_seen:
+        if key not in self._notes_seen and key not in self._notes_reported:
             self._notes_seen[key] = message
 
     def _tether_entries(self) -> list[Entry]:
@@ -698,6 +918,9 @@ class CoopMod:
             report.warnings.append(str(exc))
             return report
 
+        # Before anything is rewritten: what does the cave still have queued?
+        self._settle_calls(report)
+
         plan = self.plan()
         entries = plan.values()
         report.wrote = plan.labels()[:6]
@@ -713,6 +936,11 @@ class CoopMod:
                 cave.param_block_at(self._cave) + cave.ENTRIES_OFFSET,
                 cave.encode_entries(entries),
             )
+            self.pine.write_bytes(
+                cave.param_block_at(self._cave) + cave.CALLS_OFFSET,
+                cave.encode_calls(plan.calls),
+            )
+            self._arm_calls(plan)
         except PineError as exc:
             report.ok = False
             report.warnings.append(f"could not refill the cave: {exc}")
@@ -792,6 +1020,10 @@ class CoopMod:
                 done.append(f"could not zero the cave: {exc}")
         self._cave = 0
         self._interpreter = None
+        # A later install is a new cave and a new session: the calls it was told to
+        # make have not been made by *it*.
+        self._calls_pending.clear()
+        self._calls_done.clear()
         return done
 
     # ------------------------------------------------------------------ status
@@ -811,6 +1043,7 @@ class CoopMod:
             "p2": self.config.p2,
             "split": self.config.split.value,
             "hud": hud.describe_for(self.table, self.config.hud_mode),
+            "calls": plan.describe_calls(),
             "views": views.plan_views(
                 self.table,
                 self.config.split.value,

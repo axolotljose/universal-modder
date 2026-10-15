@@ -248,6 +248,72 @@ root for a feature that only matters when two players deliberately walk apart,
 which is the wrong trade. Direction is preserved (player two is pulled back along
 the line to player one, not teleported on top), and it is off by default.
 
+## Fourth pass: calls, because a write cannot construct anything
+
+Everything the mod could do until now was *state*: set `actor_count` to 2, force a
+view mode, write a rectangle, place a HUD, copy a position. That runs out exactly at
+the two places this mod most needs to be: if the story stage never built a second
+actor structure, no amount of writing to it will make one appear, and if the renderer
+recomputes its viewports from something else, writing `view_mode` again is not the
+answer. Both of those are *doings*, and the only code that can do them is the game's
+own. So the cave learned to call.
+
+The interpreter grew a second list: eight bytes per call -- function address, then
+argument -- scanned after the write list, from `CALLS_OFFSET` to `CALLS_END`. An
+argument with bit 31 set is read at call time, the same spelling the write list
+uses, which is what a spawner wants: the handle the stage has just allocated, not
+the one it had a quarter of a second ago. `$a0-$a3` are saved in the prologue and
+restored before the displaced function runs, because those registers hold *the
+game's* arguments to the function we interrupted, and a call of our own is exactly
+the thing that would otherwise eat them.
+
+**The once rule is the whole design.** A write must be re-applied every frame,
+because the engine un-does it every frame. A call is the opposite: "spawn the
+partner" run sixty times a second is sixty partners. So the cave *consumes* a call
+as it takes it -- it zeroes the function word -- and the host, in `_settle_calls`,
+reads the call region back before each refill and re-sends only the calls it has not
+yet seen disappear. That read is the evidence for the line `called spawn_partner`,
+and it replaced an earlier, weaker design that used "did the frame counter move" as
+proof: the frame counter proves a refill ran, not that a call did, and it cannot
+tell "queued, waiting for the game to reach it" from "already made".
+
+Three of the bugs this pass were found by tests written before the code was trusted,
+and all three were the same shape -- something that looked like bookkeeping and was
+actually the difference between one partner and sixty:
+
+- **A refill wiped a call the game had not reached yet.** The host rewrites the whole
+  call region every pass; a one-shot call armed while the game was paused was erased
+  by the next refill before a frame could carry it. Fix: the read-back decides, and a
+  call that is still in the region is still re-sent.
+- **The install itself counted as a firing.** Arming on write meant "armed at install,
+  then re-armed on the first tick", so the first call was made twice. Same root cause,
+  same fix.
+- **The call region started on the entry list's terminator.** `CALLS_OFFSET` was
+  `ENTRIES_OFFSET + 8 * MAX_ENTRIES`, which is where a *full* write list (40 entries,
+  41 slots with its terminator) puts its terminator -- so a frame that filled the
+  write budget silently zeroed the first call slot. Off by one slot, invisible until
+  both budgets are full, and now a selfcheck assertion rather than a comment.
+
+And one bug of the opposite kind, in a note: `_note_once` reported a problem once per
+watchdog pass instead of once ever, because the condition behind it stays true and the
+drain forgot what it had already said. Four identical warnings a second is how the
+warnings that are new get buried -- which is the exact thing the function's docstring
+promised not to do.
+
+One case cannot be decided at all, only chosen: a host that starts against a cave
+another host installed. A one-shot call that is not in the region *now* may have been
+made a second ago or never, and there is no reading that tells them apart -- so the
+mod assumes it was made and leaves it alone, says so in the install report, and tells
+the user to eject and install again if they reloaded a stage. Spawning the partner
+twice is a bug a player sees; not spawning it is a reload.
+
+The worksheet gained two calls that are deliberately `NOT FOUND YET`
+(`spawn_partner`, and `set_view_mode` as the last-resort route to the split), the
+recipe for finding one is `docs/DISCOVERY.md` §10, and `discover poke --call
+FUNCTION=ARG` is how you try one out for four seconds and get everything put back.
+A call with an address and no argument is refused outright, loudly and once: jumping
+into code we found while handing it a value we invented is how a stage crashes.
+
 ## What is not done
 
 **The addresses.** Every field the mod needs is in
@@ -256,6 +322,12 @@ the line to player one, not teleported on top), and it is off by default.
 the mod, and no agent can measure them without the disc in a running emulator.
 The tooling to measure them is complete and tested; the measuring is the user's
 step, and the mod says so rather than guessing values that would corrupt a stage.
+
+The same goes for the calls: **nothing is called**, because the worksheet has no call
+with both an address and an argument. `spawn_partner` is the one that would matter
+most -- if forcing `actor_count` is not enough to get a second actor simulated, that
+function is what actually constructs it -- and finding it is a Ghidra session on the
+stage loader plus one `discover poke --call`, not a guess.
 
 Also unverified: whether the story renderer accepts a split view mode at all, and
 whether the story HUD has the fields the per-view policy wants (an instance
@@ -286,3 +358,8 @@ viewports, two heroes and two pads.
 6. The tether radius wants a number rather than a guess: `--tether-radius 200` is
    a placeholder for a playground-sized stage, and the right value is whatever a
    load-zone boundary turns out to be.
+7. The calls (§10): find the stage's own "add the second player" routine, or the
+   view-mode setter behind the renderer, and record both address and argument with
+   `aecoops set calls.<name>.addr=... calls.<name>.arg=...`. Until then the whole
+   feature is inert by construction -- which is the point of it being refused
+   rather than guessed.

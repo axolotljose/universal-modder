@@ -21,10 +21,12 @@ tags: ["coop", "split-screen", "code-cave", "mips", "pine", "pcsx2", "emulator",
 
 > Story mode is one player and one hero, so this mod puts both heroes in the stage
 > at once with the screen split, one pad each, and either player can be Kei or
-> Yumi. It is an emulator mod: a ~40 instruction interpreter installed into unused
+> Yumi. It is an emulator mod: a 77-instruction interpreter installed into unused
 > EE RAM, reached by redirecting one `jal` in the game's per-frame path, which
-> re-applies the state the engine keeps overwriting. The mod's code is finished and
-> tested (224 tests, including the machine code executing in an R5900 interpreter),
+> re-applies the state the engine keeps overwriting -- and, where state is not
+> enough, **calls the game's own functions** (a write can set `actor_count`, it
+> cannot construct a second actor). The mod's code is finished and
+> tested (268 tests, including the machine code executing in an R5900 interpreter),
 > but **nobody has found the addresses on real hardware yet** -- that is the one
 > step left, and `docs/DISCOVERY.md` in the example folder is the procedure.
 >
@@ -170,6 +172,8 @@ python -m aecoops discover snapshot --out minigame.json
 python -m aecoops discover diff stage.json minigame.json --max-value 64
 # and, to test one candidate by eye, the only command here that writes:
 python -m aecoops discover poke --site 0x... --set 0x00110010=1 --duration 3
+# a candidate that has to be *run* rather than written -- a constructor, a setter:
+python -m aecoops discover poke --site 0x... --call 0x00123456=1 --duration 4
 
 # record what you found (see docs/DISCOVERY.md for every field)
 python -m aecoops set globals.frame_hook.addr=0x00123456 globals.frame_hook.verified=2026-10-15
@@ -177,6 +181,9 @@ python -m aecoops set characters.kei=0 characters.yumi=1
 python -m aecoops set structs.actor.stride=0x1f0 structs.actor.fields.char_id.offset=0x38
 python -m aecoops set globals.hud_instances.addr=0x1a2b3c4
 python -m aecoops set structs.hud.stride=0x40 structs.hud.fields.x.offset=0x04
+# optional, and refused unless both halves are measured: a function of the game's
+# own the cave may call (bit 31 on `arg` means "read the argument at this address")
+python -m aecoops set calls.spawn_partner.addr=0x00160000 calls.spawn_partner.arg=1
 
 python -m aecoops status             # the writes it would make, and what is missing
 python -m aecoops install            # cave + parameter block + trampoline, plan armed
@@ -203,7 +210,11 @@ python -m aecoops export-pnach --out cheats/<CRC>.pnach
    displaced function called exactly once, `$ra` holding what the original call
    would have left (`site+8`), `$sp` restored, `$a0-$a3`/`$s*`/`$gp`/`$fp`
    untouched, an empty block being a genuine no-op, the entry budget honoured, a
-   zero terminator stopping the loop, and indirect entries copying live words.
+   zero terminator stopping the loop, and indirect entries copying live words. For
+   calls: the function is entered with its argument in `$a0` (a constant or the word
+   at an address), the slot is consumed so it is not called a second time, an empty
+   slot is skipped rather than treated as the end of the list, and the displaced
+   function still runs afterwards with the game's own `$a0-$a3` intact.
 4. **The mod end to end.** A simulated console (`tests/gamesim.py`) joins the fake
    emulator to the interpreter and stands in for the game -- **including rewriting
    its own frame state every frame**, which is the behaviour the whole mod exists to
@@ -232,7 +243,9 @@ python -m aecoops export-pnach --out cheats/<CRC>.pnach
    that matters and the one a policy test cannot make.
 
 `python -m aecoops selfcheck` runs the same checks on a user's machine in one
-command (91 of them); the suite is 224 tests in about 22 seconds.
+command (114 of them, including that the call region does not overlap the write
+list and that every `docs/DISCOVERY.md#key` a message prints still resolves to a
+section); the suite is 268 tests in about 24 seconds.
 
 **What was NOT verified.** Everything about the actual game:
 
@@ -357,7 +370,24 @@ command (91 of them); the suite is 224 tests in about 22 seconds.
     player two within N world units (host-measured, so up to a watchdog period
     late), or accept it and let the second hero wait at the edge.
 
-18. **Symptom:** a value poked once from outside appears to work -- the panel moves,
+18. **Symptom:** the partner appears twice -- two of them, or a burst of them -- the
+    moment co-op starts. **Cause:** a *call* is not a write. The engine un-does a
+    write every frame, so the mod re-applies writes every frame; a call re-applied
+    every frame is sixty spawns a second. **Fix:** the cave consumes a call as it
+    takes it (zeroes the function word) and the host re-sends only the calls it has
+    not read back as consumed. The one-shot flag is the default for exactly this
+    reason: "make the game do a thing" and "keep a word at a value" need opposite
+    schedules, and the same code path cannot serve both.
+
+19. **Symptom:** a call is made once, and then a full write list appears to erase it
+    -- the partner never spawns, with no error. **Cause:** the call region started on
+    the entry list's *terminator* slot, so a frame that filled the 40-entry write
+    budget zeroed the first call slot. **Fix:** the regions are laid out with explicit
+    room for each other's terminator, and `aecoops selfcheck` asserts it -- this is
+    the class of bug that is invisible until both lists are full, so it needs an
+    assertion rather than a comment.
+
+20. **Symptom:** a value poked once from outside appears to work -- the panel moves,
     the flag flips -- and then reverts a moment later. **Cause:** the engine rewrites
     its frame state mid-frame, so a one-shot write is indistinguishable from a write
     the engine ignored while you were looking. **Fix:** `discover poke` writes every
@@ -393,7 +423,13 @@ afternoon of guessing.
 3. Does the second actor need a flag beyond `actor_count` to be simulated? If the
    actor exists but its logic never runs, the tether masks it -- turn the tether off
    to find out.
-4. Does the story HUD have an instance table at all? The policy's per-view mode
+4. **Which function constructs the second player actor** -- if forcing `actor_count`
+   is not enough, that is the call that matters. The route is §10: find the stage
+   loader's own "add player two", confirm it with `discover poke --call` while the
+   stage is running, then record the address *and* the argument. Nothing is called
+   until both are there, which is the design: a call to an address nobody has looked
+   at is a jump into code with garbage in a register.
+5. Does the story HUD have an instance table at all? The policy's per-view mode
    needs three things from it -- a count, a stride, movable anchors -- and the
    measurement recipe is `Ultim-ape Fighter!`'s two stamina bars. If the answer is
    no, the fallback is `hidden` plus the pause menu, which is a worse answer but an

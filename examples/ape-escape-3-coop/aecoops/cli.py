@@ -249,8 +249,30 @@ def cmd_discover_poke(args) -> int:
             return _fail(f"{pair!r} is not DEST=SOURCE")
         dest, source = pair.split("=", 1)
         writes.append(cave.copy(int(dest, 0), int(source, 0)))
-    if not writes:
-        return _fail("nothing to write: pass --set ADDR=VALUE or --copy DEST=SOURCE")
+    calls: list[tuple[int, int]] = []
+    for pair in getattr(args, "call", None) or []:
+        if "=" not in pair:
+            return _fail(f"{pair!r} is not FUNCTION=ARGUMENT (use FUNCTION=0 for no argument)")
+        fn, arg = pair.split("=", 1)
+        try:
+            calls.append(cave.call(int(fn, 0), int(arg, 0)))
+        except ValueError as exc:
+            return _fail(str(exc))
+    for pair in getattr(args, "call_read", None) or []:
+        # The shape a spawner wants: hand it the handle the stage allocated, not a
+        # number that was true when this command was typed.
+        if "=" not in pair:
+            return _fail(f"{pair!r} is not FUNCTION=SOURCE_ADDRESS")
+        fn, source = pair.split("=", 1)
+        try:
+            calls.append(cave.call_read(int(fn, 0), int(source, 0)))
+        except ValueError as exc:
+            return _fail(str(exc))
+    if not writes and not calls:
+        return _fail(
+            "nothing to do: pass --set ADDR=VALUE, --copy DEST=SOURCE, --call FUNCTION=ARG "
+            "or --call-read FUNCTION=SOURCE"
+        )
     cave_addr = _int_or_none(args.cave)
     with _pine(args) as pine:
         if cave_addr is None:
@@ -258,9 +280,18 @@ def cmd_discover_poke(args) -> int:
                 pine, cave.CAVE_CODE_SIZE + cave.PARAM_BLOCK_SIZE, [EE_RAM, EE_SCRATCHPAD]
             )
             print(f"using free RAM at {cave_addr:#010x}")
-        print(f"writing {len(writes)} address(es) every frame for {args.duration:.1f}s -- watch the screen")
+        what = f"{len(writes)} address(es) every frame"
+        if calls:
+            what += f" and {len(calls)} call(s) once per refill"
+        print(f"doing that for {args.duration:.1f}s -- watch the screen: {what}")
         report = discover.poke_entries(
-            pine, _int_or_none(args.site), cave_addr, writes, duration=args.duration, expected_hz=args.hz
+            pine,
+            _int_or_none(args.site),
+            cave_addr,
+            writes,
+            calls=calls,
+            duration=args.duration,
+            expected_hz=args.hz,
         )
     print(f"  site {report.site:#010x}, cave {report.cave:#010x}")
     print(f"  {report.ticks} ticks, {report.applied} writes per tick")
@@ -489,6 +520,14 @@ def cmd_export_pnach(args) -> int:
         entries = plan.values()
         for warning in plan.warnings:
             print(f"  ! {warning}", file=sys.stderr)
+        repeating = [spec.name for spec in table.calls if spec.ready and not spec.once]
+        if repeating:
+            print(
+                "  ! these calls are marked as repeating, but a frozen .pnach has no watchdog to "
+                "refill them, so each will fire once at the first stage frame: "
+                + ", ".join(repeating),
+                file=sys.stderr,
+            )
         text = pnach.build_from_words(
             site=site,
             site_word=word,
@@ -501,12 +540,14 @@ def cmd_export_pnach(args) -> int:
                 f"{config.split.value} split. Built on {time.strftime('%Y-%m-%d')}."
             ),
             entries=entries,
+            calls=plan.calls,
         )
         out = Path(args.out) if args.out else Path(pnach.pnach_name(info.serial, info.uuid))
         pnach.write(text, out)
         print(f"wrote {out} ({len(text.splitlines())} lines; {pnach.explain(text)})")
         print(f"  copy it into PCSX2's cheats/ folder -- it applies itself at boot, no host process needed")
-        print(f"  cave {cave_addr:#010x}, hook {site:#010x}, {len(entries)} baked-in entries")
+        calls_note = f", {len(plan.calls)} call(s) at the first stage frame" if plan.calls else ""
+        print(f"  cave {cave_addr:#010x}, hook {site:#010x}, {len(entries)} baked-in entries{calls_note}")
     return 0
 
 
@@ -655,6 +696,18 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--cave", default=None, help="cave address (default: auto-detect free RAM)")
             p.add_argument("--set", action="append", metavar="ADDR=VALUE", help="a constant to write; repeatable")
             p.add_argument("--copy", action="append", metavar="DEST=SOURCE", help="mirror one word onto another")
+            p.add_argument(
+                "--call",
+                action="append",
+                metavar="FUNCTION=ARG",
+                help="call a function of the game's own, once per refill, with ARG in $a0",
+            )
+            p.add_argument(
+                "--call-read",
+                action="append",
+                metavar="FUNCTION=SOURCE",
+                help="...passing the word at SOURCE instead, read at call time",
+            )
             p.add_argument("--duration", type=float, default=3.0)
             p.add_argument("--hz", type=float, default=None, help="expected frame rate (default 60)")
         p.set_defaults(func=fn)
