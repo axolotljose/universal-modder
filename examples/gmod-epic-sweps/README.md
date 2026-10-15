@@ -10,6 +10,18 @@ offline harness we used to prove both run without errors.
 
 Both also have voice lines (see [Voice](#voice-lines)).
 
+## Download
+
+Prebuilt addons (each zip has the addon folder at its root, so unzipping into `garrysmod/addons/` *is* the install):
+
+- **both weapons** → [`epic_sweps.zip`](https://github.com/axolotljose/universal-modder/releases/latest/download/epic_sweps.zip)
+- **just the zombie box** → [`epic_zombie_spawner.zip`](https://github.com/axolotljose/universal-modder/releases/latest/download/epic_zombie_spawner.zip)
+- **just the missiles** → [`epic_7000_missiles.zip`](https://github.com/axolotljose/universal-modder/releases/latest/download/epic_7000_missiles.zip)
+
+These are the only binaries in the release; the real source is the `epic_sweps/` folder in this repo
+(`git clone`, or `python3 tools/build_materials.py --package` to rebuild the zips yourself). If a link
+404s, no release has been published to this repo yet.
+
 ## Install
 
 Drop the folder in and restart GMod:
