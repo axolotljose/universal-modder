@@ -73,7 +73,12 @@ list is empty). 32 checks, 0 failures.
 
 ## 2026-10-15 — packaging + linters
 
-`tools/build_materials.py --package` splits the folder into two standalone addons and one combined zip;
+`tools/build_materials.py --package` splits the folder into two standalone addons and one combined zip.
+They land in `downloads/` (tracked) rather than `dist/` (ignored repo-wide by the root `.gitignore`, and
+`dist/` inside a directory is not negatable from a nested `.gitignore`) — the zips are the deliverable for
+anyone who will not run the script, and `gh release` asset upload is not reachable from a sandbox that only
+allows github.com/api.github.com, so in-repo was the only honest way to hand out a download link.
+
 each zip puts `epic_zombie_spawner/` (or `epic_7000_missiles/`) at its root so unzipping into
 `garrysmod/addons/` installs it, and both halves carry the shared modules so no `include` 404s. The
 `addon.txt` in an addon folder is the **AddonInfo** keyvalues schema (`name`, `author`, `Version`,

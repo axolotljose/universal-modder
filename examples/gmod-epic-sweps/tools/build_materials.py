@@ -163,11 +163,17 @@ COMMON = [
 ]
 
 
+DOWNLOADS = os.path.join(EXAMPLE, "downloads")
+
+
 def package(out_dir):
+    # dist/ is throwaway staging (gitignored, and `dist/` is ignored repo-wide by design:
+    # it is build output). The finished zips are the deliverable, so they land in downloads/.
     dist = os.path.join(out_dir, "dist")
-    if os.path.isdir(dist):
-        shutil.rmtree(dist)
-    os.makedirs(dist, exist_ok=True)
+    for d in (dist, DOWNLOADS):
+        if os.path.isdir(d):
+            shutil.rmtree(d)
+        os.makedirs(d, exist_ok=True)
 
     for slug, spec in SPLIT.items():
         stage = os.path.join(dist, slug)
@@ -193,7 +199,7 @@ def package(out_dir):
                     '\t"contact"\t""\n\t"Version"\t"1.0"\n\t"UpstreamPage" ""\n'
                     '\t"tags"\t\t"fun+other"\n}\n' % spec["name"])
 
-        zpath = os.path.join(dist, slug + ".zip")
+        zpath = os.path.join(DOWNLOADS, slug + ".zip")
         with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
             for root, _, files in os.walk(stage):
                 for fn in files:
@@ -202,7 +208,7 @@ def package(out_dir):
         print("packed", zpath, "%.0f KB" % (os.path.getsize(zpath) / 1024.0))
 
     # the combined one, as it is developed
-    zpath = os.path.join(dist, "epic_sweps.zip")
+    zpath = os.path.join(DOWNLOADS, "epic_sweps.zip")
     with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
         for root, _, files in os.walk(ADDON):
             if "assets" in root:

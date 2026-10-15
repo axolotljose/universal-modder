@@ -12,15 +12,17 @@ Both also have voice lines (see [Voice](#voice-lines)).
 
 ## Download
 
-Prebuilt addons (each zip has the addon folder at its root, so unzipping into `garrysmod/addons/` *is* the install):
+Prebuilt addons — each zip has the addon folder at its root, so unzipping into `garrysmod/addons/` *is* the install:
 
-- **both weapons** → [`epic_sweps.zip`](https://github.com/axolotljose/universal-modder/releases/latest/download/epic_sweps.zip)
-- **just the zombie box** → [`epic_zombie_spawner.zip`](https://github.com/axolotljose/universal-modder/releases/latest/download/epic_zombie_spawner.zip)
-- **just the missiles** → [`epic_7000_missiles.zip`](https://github.com/axolotljose/universal-modder/releases/latest/download/epic_7000_missiles.zip)
+- **both weapons** → [`epic_sweps.zip`](https://github.com/axolotljose/universal-modder/raw/v1.0/examples/gmod-epic-sweps/downloads/epic_sweps.zip) · 2.2 MB
+- **just the zombie box** → [`epic_zombie_spawner.zip`](https://github.com/axolotljose/universal-modder/raw/v1.0/examples/gmod-epic-sweps/downloads/epic_zombie_spawner.zip) · 2.2 MB
+- **just the missiles** → [`epic_7000_missiles.zip`](https://github.com/axolotljose/universal-modder/raw/v1.0/examples/gmod-epic-sweps/downloads/epic_7000_missiles.zip) · 2.2 MB
 
-These are the only binaries in the release; the real source is the `epic_sweps/` folder in this repo
-(`git clone`, or `python3 tools/build_materials.py --package` to rebuild the zips yourself). If a link
-404s, no release has been published to this repo yet.
+The three finished zips are committed in `downloads/` so they are always one click away; they are also
+listed on [the release page](https://github.com/axolotljose/universal-modder/releases/tag/v1.0). Nothing
+here needs trusting a binary: `python3 tools/build_materials.py --package` rebuilds all three from the
+source in this folder, and `epic_sweps/` in the repo *is* the addon — you can copy that folder into
+`garrysmod/addons/` and skip the download entirely.
 
 ## Install
 
@@ -30,10 +32,10 @@ Drop the folder in and restart GMod:
 garrysmod/addons/epic_sweps/
 ```
 
-Only want one of them? Build the split versions (each is a standalone addon):
+Only want one of them? Each half is also a standalone addon (already built into `downloads/`, or rebuild:
 
 ```bash
-python3 tools/build_materials.py --package     # -> dist/epic_zombie_spawner.zip, dist/epic_7000_missiles.zip
+python3 tools/build_materials.py --package     # -> downloads/{epic_zombie_spawner,epic_7000_missiles}.zip
 ```
 
 Then: spawnmenu → **Weapons → EPIC SWEPs**, or `give weapon_epic_zombiespawner` /
@@ -103,6 +105,7 @@ by `tools/make_sfx.py` — pure Python, no samples, nothing to license. Every so
 ## Files
 
 ```
+downloads/*.zip                                        the three shippable addons (see Download above)
 epic_sweps/
   addon.txt
   scripts/epic_sweps_sound.txt            sound scripts (random variants, pitch jitter)
