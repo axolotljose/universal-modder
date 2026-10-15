@@ -180,13 +180,19 @@ class AddressTable:
                     out.append(f"{sname}.{fname}")
         return out
 
-    def resolve_all(self, pine: Pine) -> dict[str, int]:
-        """Scan for every global that needs it and return name -> live address."""
+    def resolve_all(self, pine: Pine, ranges=None) -> dict[str, int]:
+        """Scan for every global that needs it and return name -> live address.
+
+        ``ranges`` narrows where signatures are looked for. Scanning all 32 MB of
+        main RAM plus the scratchpad takes several seconds, and some signatures only
+        exist while a stage is loaded, so "look here, not everywhere" is worth being
+        able to say.
+        """
         out: dict[str, int] = {}
         problems: list[str] = []
         for name, d in self.globals.items():
             try:
-                out[name] = d.resolve(pine)
+                out[name] = d.resolve(pine, ranges)
             except LookupError as exc:
                 problems.append(str(exc))
         if problems:

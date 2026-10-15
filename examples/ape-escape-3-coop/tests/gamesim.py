@@ -51,15 +51,37 @@ class Stage:
     off_pos_y: int = 0x14
     off_pos_z: int = 0x18
     off_yaw: int = 0x1C
+    # the HUD: one instance in story mode, two in a two-player minigame
+    hud_instances: int = 0x00110024
+    hud_base: int = 0x00181000
+    hud_stride: int = 0x40
+    off_hud_visible: int = 0x00
+    off_hud_x: int = 0x04
+    off_hud_y: int = 0x08
+    off_hud_owner: int = 0x0C
+    # the two stage cameras
+    camera_base: int = 0x00182000
+    camera_stride: int = 0x20
+    off_camera_target: int = 0x00
 
     # Values the engine itself believes, i.e. what it writes back every frame.
     engine_view_mode: int = 0  # single viewport, story mode
     engine_actor_count: int = 1
     engine_char_id: int = 0
     engine_partner: int = 0
+    engine_hud_instances: int = 1
+    # where the engine puts the story HUD, and where it puts a second one when it
+    # believes there is one: bottom-right, which is why a split needs it moved.
+    engine_hud: tuple = (560, 8)
 
     def field(self, slot: int, offset: int) -> int:
         return self.actor_base + slot * self.actor_stride + offset
+
+    def hud(self, slot: int, offset: int) -> int:
+        return self.hud_base + slot * self.hud_stride + offset
+
+    def camera(self, slot: int, offset: int) -> int:
+        return self.camera_base + slot * self.camera_stride + offset
 
 
 class FakeAEC3:
@@ -119,6 +141,14 @@ class FakeAEC3:
             self.vm.write32(s.field(slot, s.off_pos_y), 0x41000000)
             self.vm.write32(s.field(slot, s.off_pos_z), 0x42000000)
             self.vm.write32(s.field(slot, s.off_yaw), 0)
+        self.vm.write32(s.hud_instances, s.engine_hud_instances)
+        for slot in range(2):
+            self.vm.write32(s.hud(slot, s.off_hud_visible), 1 if slot == 0 else 0)
+            self.vm.write32(s.hud(slot, s.off_hud_x), s.engine_hud[0])
+            self.vm.write32(s.hud(slot, s.off_hud_y), s.engine_hud[1])
+            self.vm.write32(s.hud(slot, s.off_hud_owner), 0)
+        for slot in range(2):
+            self.vm.write32(s.camera(slot, s.off_camera_target), 0)
 
     # -------------------------------------------------------------------- frames
 
@@ -134,6 +164,16 @@ class FakeAEC3:
             self.vm.write32(s.actor_count, s.engine_actor_count)
             self.vm.write32(s.partner_enabled, s.engine_partner)
             self.vm.write32(s.field(1, s.off_active), 0)
+            # The HUD too: a story stage rebuilds one instance at the bottom-right
+            # every frame, which is exactly why a per-view HUD cannot be a one-off
+            # write any more than the split itself can.
+            self.vm.write32(s.hud_instances, s.engine_hud_instances)
+            for slot in range(2):
+                self.vm.write32(s.hud(slot, s.off_hud_visible), 1 if slot == 0 else 0)
+                self.vm.write32(s.hud(slot, s.off_hud_x), s.engine_hud[0])
+                self.vm.write32(s.hud(slot, s.off_hud_y), s.engine_hud[1])
+                self.vm.write32(s.hud(slot, s.off_hud_owner), 0)
+                self.vm.write32(s.camera(slot, s.off_camera_target), 0)
             self._call_hook()
 
     def _call_hook(self) -> None:
@@ -164,6 +204,15 @@ class FakeAEC3:
             "pos_y": self.read(s.field(slot, s.off_pos_y)),
             "pos_z": self.read(s.field(slot, s.off_pos_z)),
             "yaw": self.read(s.field(slot, s.off_yaw)),
+        }
+
+    def hud_instance(self, slot: int) -> dict:
+        s = self.stage
+        return {
+            "visible": self.read(s.hud(slot, s.off_hud_visible)),
+            "x": self.read(s.hud(slot, s.off_hud_x)),
+            "y": self.read(s.hud(slot, s.off_hud_y)),
+            "owner": self.read(s.hud(slot, s.off_hud_owner)),
         }
 
     def set_engine_char(self, char_id: int) -> None:
@@ -208,7 +257,7 @@ class FakeRig:
         self.sim.close()
 
 
-def make_table(stage: Stage, kei: int = 0, yumi: int = 1, tmp=None):
+def make_table(stage: Stage, kei: int = 0, yumi: int = 1, tmp=None, with_hud: bool = False, with_cameras: bool = False):
     """An AddressTable aimed at a simulated stage (used by the co-op tests).
 
     ``tmp`` is an optional pytest tmp_path: when given, the table is written to
@@ -235,16 +284,42 @@ def make_table(stage: Stage, kei: int = 0, yumi: int = 1, tmp=None):
             "yaw": Field("yaw", stage.off_yaw, verified="simulated"),
         },
     )
+    structs = {"actor": actor}
+    globals_ = {
+        "frame_hook": disc(stage.hook_site),
+        "view_mode": disc(stage.view_mode),
+        "actor_count": disc(stage.actor_count),
+        "partner_enabled": disc(stage.partner_enabled),
+    }
+    if with_hud:
+        # The HUD the minigames use: an instance table, each entry with a
+        # visibility flag, an anchor and an owner.
+        structs["hud"] = Struct(
+            name="hud",
+            base=disc(stage.hud_base),
+            stride=stage.hud_stride,
+            count=2,
+            fields={
+                "visible": Field("visible", stage.off_hud_visible, verified="simulated"),
+                "x": Field("x", stage.off_hud_x, verified="simulated"),
+                "y": Field("y", stage.off_hud_y, verified="simulated"),
+                "owner": Field("owner", stage.off_hud_owner, verified="simulated"),
+            },
+        )
+        globals_["hud_instances"] = disc(stage.hud_instances)
+    if with_cameras:
+        structs["camera"] = Struct(
+            name="camera",
+            base=disc(stage.camera_base),
+            stride=stage.camera_stride,
+            count=2,
+            fields={"target_actor": Field("target_actor", stage.off_camera_target, verified="simulated")},
+        )
     table = AddressTable(
         characters={"kei": kei, "yumi": yumi},
         layouts={"single": 0, "vertical": 1, "horizontal": 2},
-        globals={
-            "frame_hook": disc(stage.hook_site),
-            "view_mode": disc(stage.view_mode),
-            "actor_count": disc(stage.actor_count),
-            "partner_enabled": disc(stage.partner_enabled),
-        },
-        structs={"actor": actor},
+        globals=globals_,
+        structs=structs,
     )
     if tmp is not None:
         path = tmp / "addresses.json"

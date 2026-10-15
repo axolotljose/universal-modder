@@ -135,6 +135,86 @@ Order of work, and why:
    gone. `shutdown()` before `close()` -- which is what PCSX2's own
    `Deinitialize()` does, for the same reason.
 
+## Second pass: the HUD, and a correction about the minigames
+
+The HUD was next because a split screen has two players looking at one picture,
+and the game's single HUD is placed for one of them. Digging into it produced a
+correction worth recording before the fix.
+
+**No AE3 minigame is split-screen.** The two-player minigames are shared-screen:
+Monkey Soccer, the two-player ping pong and boxing modes, and `Ultim-ape Fighter!`
+each draw one picture for both players. The design had been leaning on "the
+minigame renderer already knows how to draw two views of one stage" -- and that
+may be a thing that does not exist in this game. What the *story* renderer
+demonstrably does is draw a second view of the world into a rectangle: the
+MonkeyCam, the picture-in-picture in the bottom-right corner of a normal stage,
+which L2 enlarges and L2 restores, and the L2 first-person zoom. So the evidence
+for "this engine can draw two views" is in story mode itself, and the procedure
+now says to find the split value by comparing a stage against an enlarged
+MonkeyCam rather than against a minigame.
+
+The same dig produced three tools, because the recipes kept asking for things the
+toolkit could not do:
+
+- `discover snapshot` / `discover diff` -- the two states worth comparing are
+  minutes and a menu apart, so they are files now, and `diff` can be narrowed to
+  "words that differ and are small integers", which is the question that actually
+  finds a view mode.
+- `discover watch` (existed as a function, had no command).
+- `discover poke` -- writes candidate values every frame for a few seconds, then
+  puts everything back. "Which word moves the HUD?" cannot be answered by reading,
+  and a one-shot write proves nothing because the engine rewrites its frame state
+  mid-frame. It refuses to run over an installed cave and restores in a `finally`,
+  so it is a safe loop rather than a way to lose a save.
+
+**The HUD policy itself** is in `aecoops/hud.py`, and its whole design is
+refusal. Three modes: `shared` (write nothing, the default), `per-view` (two
+instances, each visible, each anchored inside its own view, each owned by a pad)
+and `hidden` (switch the instances off). Every write is gated on an address the
+user measured, and a mode whose addresses are missing falls back to the one below
+it *with a reason*, which `install` and `status` both print. The geometry is the
+only arithmetic: two rectangles that tile the frame exactly -- odd widths
+included, so the halves of a 641-pixel screen still cover 641 columns -- and an
+anchor inside each, from a configurable screen space because HUD coordinates are
+the engine's, not pixels.
+
+Per-view cameras came along for the ride: `structs.camera.target_actor` is written
+per view when it is measured, which finally gives the old `camera_follows` option
+a meaning (which hero the left half shows). It refuses to write when the camera
+stride is 0, because then both "slots" resolve to the same word and the second
+view would overwrite the first.
+
+Consequences carried into the code: the parameter block grew from 0x100 to 0x180
+bytes (24 -> 40 entries), because story co-op's mandatory writes are about ten and
+the optional sets -- tether, HUD, cameras -- can add a dozen; and entries now carry
+an `essential` flag so that a fully measured configuration which somehow does not
+fit loses its conveniences rather than failing to install.
+
+Bugs the tests caught on this pass:
+
+10. **The counter ranking preferred the wrong counter.** `find_counters` ranked by
+    "closest to 60/50 Hz" as a *boolean* and then by the largest raw delta, so a
+    jittery timer that happened to advance more in one sample outranked the real
+    frame counter. It now ranks by distance in Hz, then by how steady the deltas
+    were, then by size. Found by a test that had been flaky for a different
+    reason -- the *read window* was large enough that socket timing dominated the
+    deltas -- so the test was made to measure a small window, and the ranking bug
+    it had been hiding fell out immediately.
+11. **Labels drifted out of lockstep with writes.** The HUD policy appended two
+    anchors with a single label, so every label after it described the previous
+    write. The writes were right and the reporting was a lie, which is the worse
+    of the two failures in a tool whose job is to be trustworthy. Appends now go
+    through one `emit()` that cannot do one without the other, and a selfcheck
+    asserts the two lists are the same length.
+12. **A fresh install armed zero writes.** The parameter block was written with an
+    empty entry list and only filled in on the first watchdog pass, so the first
+    frame after `install` was still single-player. `install` now builds the plan
+    first and writes the block with it armed, and reports how many writes it
+    armed.
+13. **`diff(limit=0)` returned one row instead of all of them.** `0 >= 0` ended the
+    loop early, which in a filtering helper reads as "found nothing". `limit=0`
+    now means every difference.
+
 ## What is not done
 
 **The addresses.** Every field the mod needs is in
@@ -144,10 +224,12 @@ the mod, and no agent can measure them without the disc in a running emulator.
 The tooling to measure them is complete and tested; the measuring is the user's
 step, and the mod says so rather than guessing values that would corrupt a stage.
 
-Also unverified: whether the game's own two-player renderer is happy being pointed
-at a story stage. The design assumes the minigames and the story stages share the
-renderer -- which is why forcing the view mode is worth trying at all -- but that
-assumption has not been tested on hardware either.
+Also unverified: whether the story renderer accepts a split view mode at all, and
+whether the story HUD has the fields the per-view policy wants (an instance
+count, a stride, movable anchors). Both are answered by the same evening of
+measurement, and neither is a reason the mod cannot run in the meantime: `shared`
+is the default HUD mode precisely so that an unmeasured disc still gets two
+viewports, two heroes and two pads.
 
 ## Next steps
 
@@ -158,5 +240,12 @@ assumption has not been tested on hardware either.
 3. Measure the tether radius properly. Two viewports of one stage let the heroes
    walk into different load zones; a distance clamp is the cheap fix and it is
    already implemented, just not tuned.
-4. HUD: the story HUD is drawn once, centred. With two viewports it belongs to
-   neither player. The minigames must draw their own per-view HUD somewhere.
+4. HUD: done as policy (§"Second pass"), pending the measurements it is gated on.
+   The half that is still open is the *engine's* side: whether the story HUD
+   instance table exists, and whether a second instance is a count the renderer
+   reads or something the stage code builds. `Ultim-ape Fighter!`'s two stamina
+   bars are the pair to measure against, now that the split-screen assumption is
+   off the table.
+5. The split itself: the view-mode value, or -- if no single value produces two
+   clean viewports -- the MonkeyCam's rectangle, which is the one place the story
+   renderer is known to draw a second view into a box.

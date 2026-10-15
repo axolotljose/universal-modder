@@ -122,6 +122,12 @@ def make_entries_from_config(
 
     This is where "either Kei or Yumi" stops being a menu and becomes four
     constants: the two character ids and the two pad ports.
+
+    The command line no longer goes through here -- it freezes
+    :meth:`aecoops.coop.CoopMod.plan`, so the file and the live run cannot
+    disagree about anything, including the HUD and the cameras. This lower-level
+    helper stays because it is the shape a *third party* patch needs: four known
+    addresses, no table, no emulator attached.
     """
     out: list[tuple[int, int]] = []
     if view_mode_addr is not None:

@@ -13,9 +13,11 @@ oracle; a candidate that does not tick at frame rate is rejected, automatically.
 
 from __future__ import annotations
 
+import json
 import struct
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterable, Sequence
 
 from . import cave, mips
@@ -106,11 +108,18 @@ def find_counters(
             continue
         candidates.append(Counter(addr, series))
 
-    # Prefer the ones whose rate lands on a real frame rate.
-    def score(c: Counter) -> tuple[int, int]:
+    # Rank by how close the rate is to a real frame rate, then by how steady the
+    # deltas were, and only then by size. The order matters: ranking on the raw
+    # delta -- which is what a "biggest number wins" heuristic does -- picks a fast
+    # menu timer over the frame counter every time, and ranking on a coarse
+    # "within 3 Hz" bucket lets a jittery timer win the tie-break by having the
+    # larger total.
+    def score(c: Counter) -> tuple[float, int, int]:
         hz = c.hz(elapsed)
-        near = 0 if min(abs(hz - NTSC_HZ), abs(hz - PAL_HZ)) < 3 else 1
-        return (near, -abs(c.delta))
+        distance = min(abs(hz - NTSC_HZ), abs(hz - PAL_HZ))
+        deltas = [c.values[i + 1] - c.values[i] for i in range(len(c.values) - 1)]
+        spread = (max(deltas) - min(deltas)) if deltas else 0
+        return (round(distance, 3), spread, -abs(c.delta))
 
     candidates.sort(key=score)
     return candidates
@@ -154,6 +163,10 @@ class Snapshot:
         ``written`` -- before was 0 or obviously stale and after is not.
         ``settled`` -- values that stopped changing between the two samples (the
         signature of frame state becoming stage state).
+
+        ``limit=0`` means every difference: the narrowing filters above this need
+        the whole list to choose from, and "stop at zero" is a trap that looks
+        like "found nothing".
         """
         out: list[tuple[int, int, int]] = []
         for addr, after in other.words.items():
@@ -162,7 +175,64 @@ class Snapshot:
                 out.append((addr, before, after))
             elif kind == "written" and before == 0 and after != 0:
                 out.append((addr, before, after))
-            if len(out) >= limit:
+            if limit and len(out) >= limit:
+                break
+        return out
+
+    def save(self, path: str | Path) -> Path:
+        """Write a snapshot to disk, so two *states* can be compared later.
+
+        Comparing states is how the interesting values are found: a story stage
+        against a two-player minigame, or a MonkeyCam at its normal size against
+        one enlarged with L2. Those two readings are minutes apart and separated by
+        a menu, which is exactly why they cannot be diffed from one process.
+        """
+        target = Path(path)
+        payload = {
+            "taken_at": self.taken_at,
+            "ranges": [[start, end] for start, end in self.ranges],
+            "words": {f"{addr:08x}": value for addr, value in sorted(self.words.items())},
+        }
+        target.write_text(json.dumps(payload) + "\n")
+        return target
+
+    @classmethod
+    def load(cls, path: str | Path) -> "Snapshot":
+        raw = json.loads(Path(path).read_text())
+        return cls(
+            ranges=tuple((int(a), int(b)) for a, b in raw.get("ranges", [])),
+            words={int(addr, 16): int(value) for addr, value in raw.get("words", {}).items()},
+            taken_at=float(raw.get("taken_at", 0.0)),
+        )
+
+    def filtered_diff(
+        self,
+        other: "Snapshot",
+        kind: str = "changed",
+        limit: int = 64,
+        max_value: int | None = None,
+        min_value: int | None = None,
+        near: int | None = None,
+        span: int = 0x400,
+    ) -> list[tuple[int, int, int]]:
+        """``diff``, then narrowed the way a search actually needs it.
+
+        ``max_value`` is the important one: "a word that changed between a story
+        stage and a minigame, and is a small integer" is a handful of candidates,
+        where the raw diff of a 32 MB console is thousands.
+        """
+        rows = self.diff(other, kind, limit=0)
+        low = 0 if min_value is None else min_value
+        out = []
+        for addr, before, after in rows:
+            if near is not None and not (near <= addr < near + span):
+                continue
+            if max_value is not None and not (abs(before) <= max_value and abs(after) <= max_value):
+                continue
+            if min_value is not None and not (before >= low and after >= low):
+                continue
+            out.append((addr, before, after))
+            if limit and len(out) >= limit:
                 break
         return out
 
@@ -258,6 +328,86 @@ def probe_site(
         resident=resident,
         verdict=verdict,
     )
+
+
+@dataclass
+class PokeReport:
+    site: int
+    cave: int
+    entries: list[tuple[int, int]]
+    ticks: int = 0
+    applied: int = 0
+    verdict: str = ""
+
+
+def poke_entries(
+    pine: Pine,
+    site: int,
+    cave_addr: int,
+    entries: list[tuple[int, int]],
+    duration: float = 3.0,
+    expected_hz: float | None = None,
+    max_entries: int = cave.MAX_ENTRIES,
+) -> PokeReport:
+    """Write a chosen list of values every frame for a few seconds, then undo it.
+
+    This is the *write* half of discovery, and it is what turns a guess into a
+    measurement. "Which word moves the HUD?" cannot be answered by reading: you
+    set a candidate every frame -- the engine rewrites its own state mid-frame, so
+    a one-shot write proves nothing -- watch the screen, and stop.
+
+    Safety properties, in order of importance:
+
+    * it refuses to run if a cave is already installed on this site, so it cannot
+      stomp a co-op session that is already running;
+    * it restores the original instruction and zeroes the cave in a ``finally``,
+      so a crash, a Ctrl-C or a bad entry still leaves the game as it was found;
+    * it writes only the addresses it was given. There is no "region" mode: a
+      discovery tool that scribbles across memory is how a save file dies.
+
+    The return value's tick rate is the evidence that the write actually happened
+    every frame rather than once while you were looking away.
+    """
+    original = pine.read_bytes(site, 4)
+    (word,) = struct.unpack("<I", original)
+    if (word >> 26) != 0x03:
+        raise ValueError(f"{site:#x} does not hold a jal, so nothing can be intercepted there")
+    callee = cave.callee_of_jal(word, site)
+    if probe_is_installed(pine, site, cave_addr):
+        raise RuntimeError(
+            f"a cave is already installed at {cave_addr:#x} (site {site:#x}). Eject it first: "
+            "`aecoops eject --site ... --cave ...`"
+        )
+
+    interp = cave.build_interpreter(cave_addr, site, callee, max_entries=max_entries)
+    try:
+        pine.write_bytes(cave_addr, interp.code)
+        pine.write_bytes(cave.param_block_at(cave_addr), cave.initial_param_block(max_entries))
+        pine.write_bytes(cave.param_block_at(cave_addr) + cave.ENTRIES_OFFSET, cave.encode_entries(entries, max_entries))
+        pine.write_bytes(site, interp.trampoline)
+
+        first = cave.read_block(pine, cave_addr)
+        t0 = time.monotonic()
+        time.sleep(duration)
+        second = cave.read_block(pine, cave_addr)
+        elapsed = time.monotonic() - t0
+    finally:
+        pine.write_bytes(site, original)
+        pine.write_bytes(cave_addr, b"\x00" * len(interp.code))
+        pine.write_bytes(cave.param_block_at(cave_addr), b"\x00" * cave.PARAM_BLOCK_SIZE)
+
+    ticks = (second["ticks"] - first["ticks"]) & 0xFFFFFFFF
+    hz = ticks / elapsed if elapsed > 0 else 0.0
+    target = expected_hz if expected_hz is not None else NTSC_HZ
+    if not (first["magic_ok"] and second["magic_ok"]):
+        verdict = "the parameter block was cleared: something else owns this memory"
+    elif ticks == 0:
+        verdict = "never called: not on the per-frame path in this scene"
+    elif abs(hz - target) > max(2.0, target * 0.1):
+        verdict = f"called at {hz:.1f} Hz: the writes are not landing every frame"
+    else:
+        verdict = f"writing {len(entries)} entries every frame for {duration:.1f}s"
+    return PokeReport(site=site, cave=cave_addr, entries=entries, ticks=ticks, applied=int(second["applied"]), verdict=verdict)
 
 
 def probe_is_installed(pine: Pine, site: int, cave_addr: int) -> bool:

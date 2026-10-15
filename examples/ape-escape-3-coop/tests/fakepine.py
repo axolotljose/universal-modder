@@ -33,6 +33,15 @@ class ProtocolError(RuntimeError):
     pass
 
 
+# The EE's 16 KiB scratchpad is a physically separate memory, mapped at
+# 0x70000000. A fake that stops at the end of main RAM would reject reads the real
+# emulator serves happily -- which matters because the default scan range covers
+# both, and a signature scan that dies on the scratchpad would look like a broken
+# client rather than an incomplete fake.
+SCRATCHPAD_BASE = 0x70000000
+SCRATCHPAD_SIZE = 0x4000
+
+
 class FakePCSX2:
     """A PINE server backed by a plain bytearray.
 
@@ -51,6 +60,7 @@ class FakePCSX2:
         # `ram` lets a test share one memory image with the interpreter, so writes
         # that arrive over PINE are visible to code the mod has installed.
         self.ram = ram if ram is not None else bytearray(ram_size)
+        self.scratchpad = bytearray(SCRATCHPAD_SIZE)
         self.status = status
         self.strict = strict
         self.requests = 0
@@ -194,14 +204,32 @@ class FakePCSX2:
 
     # ------------------------------------------------------------------ storage
 
+    def _region(self, addr: int, size: int) -> tuple[bytearray, int] | None:
+        """Which memory an address lands in, as (buffer, offset) or None."""
+        if 0 <= addr and addr + size <= len(self.ram):
+            return self.ram, addr
+        if SCRATCHPAD_BASE <= addr and addr + size <= SCRATCHPAD_BASE + SCRATCHPAD_SIZE:
+            return self.scratchpad, addr - SCRATCHPAD_BASE
+        return None
+
     def _can_read(self, addr: int, size: int) -> bool:
-        return 0 <= addr and addr + size <= len(self.ram)
+        return self._region(addr, size) is not None
 
     def _mem_read(self, addr: int, size: int) -> bytes:
-        return bytes(self.ram[addr : addr + size])
+        region = self._region(addr, size)
+        if region is None:
+            # Only reachable in non-strict mode: an unmapped EE read returns zeros,
+            # which is what PCSX2 hands back for an address the guest does not map.
+            return b"\x00" * size
+        buf, offset = region
+        return bytes(buf[offset : offset + size])
 
     def _mem_write(self, addr: int, value: int, size: int) -> None:
-        self.ram[addr : addr + size] = value.to_bytes(size, "little")
+        region = self._region(addr, size)
+        if region is None:
+            return
+        buf, offset = region
+        buf[offset : offset + size] = value.to_bytes(size, "little")
 
     # ------------------------------------------------------------------ helpers
 

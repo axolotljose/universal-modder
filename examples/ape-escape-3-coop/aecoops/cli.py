@@ -24,9 +24,10 @@ import sys
 import time
 from pathlib import Path
 
-from . import cave, discover, mips, pnach
+from . import cave, discover, hud, mips, pnach
 from .addresses import AddressTable, DEFAULT_TABLE, TableError
 from .coop import CoopConfig, CoopMod, Split, character_from
+from .hud import HudMode, Screen
 from .patcher import PatchSet, revert
 from .pine import Pine, PineError, PineNotRunning, PineUnusable
 from .scan import EE_RAM, EE_SCRATCHPAD
@@ -175,6 +176,99 @@ def cmd_discover_disasm(args) -> int:
     return 0
 
 
+def _ranges(args) -> list[tuple[int, int]]:
+    if getattr(args, "range", None):
+        return [(int(a, 16), int(b, 16)) for a, b in (r.split(":") for r in args.range)]
+    return [EE_RAM]
+
+
+def cmd_discover_snapshot(args) -> int:
+    """Read a region now and save it, so a *state* can be compared later.
+
+    The comparison that matters is between two game states minutes apart -- a
+    story stage and a two-player minigame, a MonkeyCam at normal size and one
+    enlarged with L2 -- which no single process can hold in memory at once.
+    """
+    ranges = _ranges(args)
+    with _pine(args) as pine:
+        shot = discover.Snapshot.take(pine, ranges)
+    path = shot.save(args.out)
+    print(f"wrote {path}: {len(shot.words)} words from {len(ranges)} range(s)")
+    print("  change the game (enter a minigame, press L2), take the second one, then `aecoops discover diff`")
+    return 0
+
+
+def cmd_discover_diff(args) -> int:
+    before = discover.Snapshot.load(args.before)
+    after = discover.Snapshot.load(args.after)
+    rows = before.filtered_diff(
+        after,
+        kind=args.kind,
+        limit=args.limit,
+        max_value=args.max_value,
+        min_value=args.min_value,
+        near=_int_or_none(args.near),
+    )
+    print(f"{len(rows)} word(s) {args.kind} between the two snapshots")
+    for addr, old, new in rows:
+        print(f"  {addr:#010x}  {old:#010x} -> {new:#010x}   ({old} -> {new})")
+    if not rows and args.max_value is not None:
+        print("  nothing small changed: either the state did not actually differ, or the value is not a small int")
+    return 0
+
+
+def cmd_discover_watch(args) -> int:
+    """What changes in this region over the next few seconds."""
+    ranges = _ranges(args)
+    with _pine(args) as pine:
+        rows = discover.watch(pine, ranges, span=args.span, limit=args.limit)
+    print(f"{len(rows)} word(s) changed in {args.span:.1f}s")
+    for addr, old, new in rows[: args.limit]:
+        print(f"  {addr:#010x}  {old:#010x} -> {new:#010x}")
+    return 0
+
+
+def cmd_discover_poke(args) -> int:
+    """Write candidate values every frame, for a few seconds, then undo them.
+
+    This is the command that answers "which word moves the HUD?": set a candidate
+    and watch the screen. It always restores what it found, and it refuses to run
+    on top of an installed cave.
+    """
+    writes: list[tuple[int, int]] = []
+    for pair in args.set or []:
+        if "=" not in pair:
+            return _fail(f"{pair!r} is not ADDR=VALUE")
+        addr, value = pair.split("=", 1)
+        try:
+            writes.append(cave.const(int(addr, 0), int(value, 0)))
+        except ValueError as exc:
+            return _fail(str(exc))
+    for pair in args.copy or []:
+        if "=" not in pair:
+            return _fail(f"{pair!r} is not DEST=SOURCE")
+        dest, source = pair.split("=", 1)
+        writes.append(cave.copy(int(dest, 0), int(source, 0)))
+    if not writes:
+        return _fail("nothing to write: pass --set ADDR=VALUE or --copy DEST=SOURCE")
+    cave_addr = _int_or_none(args.cave)
+    with _pine(args) as pine:
+        if cave_addr is None:
+            cave_addr = cave.find_free_region(
+                pine, cave.CAVE_CODE_SIZE + cave.PARAM_BLOCK_SIZE, [EE_RAM, EE_SCRATCHPAD]
+            )
+            print(f"using free RAM at {cave_addr:#010x}")
+        print(f"writing {len(writes)} address(es) every frame for {args.duration:.1f}s -- watch the screen")
+        report = discover.poke_entries(
+            pine, _int_or_none(args.site), cave_addr, writes, duration=args.duration, expected_hz=args.hz
+        )
+    print(f"  site {report.site:#010x}, cave {report.cave:#010x}")
+    print(f"  {report.ticks} ticks, {report.applied} writes per tick")
+    print(f"  {report.verdict}")
+    print("  everything is back the way it was")
+    return 0 if report.ticks else 1
+
+
 def cmd_find_free(args) -> int:
     if args.range:
         ranges = [(int(a, 16), int(b, 16)) for a, b in (r.split(":") for r in args.range)]
@@ -189,6 +283,17 @@ def cmd_find_free(args) -> int:
     return 0 if stable else 1
 
 
+def _scan_ranges(args) -> list[tuple[int, int]] | None:
+    """``--scan-range START:END`` (hex, repeatable) or None for "everywhere"."""
+    raw = getattr(args, "scan_range", None)
+    if not raw:
+        return None
+    try:
+        return [(int(a, 16), int(b, 16)) for a, b in (item.split(":") for item in raw)]
+    except ValueError as exc:
+        raise TableError(f"--scan-range wants START:END in hex: {exc}") from exc
+
+
 def _config(args) -> CoopConfig:
     p1 = character_from(getattr(args, "p1", None), "kei")
     p2_raw = getattr(args, "p2", None)
@@ -199,6 +304,9 @@ def _config(args) -> CoopConfig:
         p1=p1,
         p2=p2,
         split=Split(getattr(args, "split", "vertical")),
+        hud_mode=HudMode(getattr(args, "hud", "shared")),
+        screen=Screen.parse(getattr(args, "screen", None)),
+        cameras_follow_views=not getattr(args, "no_cameras", False),
         tether_until_independent=not getattr(args, "no_tether", False),
         tether_radius=float(getattr(args, "tether_radius", 0.0)),
     )
@@ -213,6 +321,7 @@ def cmd_install(args) -> int:
             cave_addr=_int_or_none(args.cave),
             site=_int_or_none(args.site),
             journal=Path(args.journal),
+            ranges=_scan_ranges(args),
         )
         print(report.summary())
         if not report.ok:
@@ -238,11 +347,14 @@ def cmd_play(args) -> int:
                 print(report.summary())
                 return 1
         elif args.install:
-            report = mod.install()
+            report = mod.install(ranges=_scan_ranges(args))
             if not report.ok:
                 print(report.summary())
                 return 1
-        print(f"co-op: {mod.config.p1} (pad 1) + {mod.config.p2} (pad 2), {mod.config.split.value} split")
+        print(
+            f"co-op: {mod.config.p1} (pad 1) + {mod.config.p2} (pad 2), {mod.config.split.value} split, "
+            f"hud {mod.config.hud_mode.value}"
+        )
         print("Ctrl-C to stop. `aecoops eject` puts the game back afterwards.")
         state = {"beats": 0}
 
@@ -257,12 +369,24 @@ def cmd_play(args) -> int:
 
 
 def cmd_status(args) -> int:
+    """Report what the mod would do, including the parts it cannot do yet.
+
+    On a fresh worksheet this is the most useful command in the toolkit: it reads
+    the plan the mod would apply and the warnings it would raise, without a single
+    write anywhere. The warnings are the to-do list.
+    """
     table = _table(args)
     with _pine(args) as pine:
         mod = CoopMod(pine, table, _config(args))
         mod.attach(_int_or_none(args.cave))
         for key, value in mod.status().items():
             print(f"  {key:<12} {value}")
+        plan = mod.plan()
+        print(f"  {'writes':<12} {len(plan.entries)}: " + ", ".join(e.label for e in plan.entries[:8]) + (" ..." if len(plan.entries) > 8 else ""))
+        if plan.warnings:
+            print("  waiting on:")
+            for warning in plan.warnings:
+                print(f"    ! {warning}")
     return 0
 
 
@@ -327,6 +451,13 @@ def cmd_revert(args) -> int:
 
 
 def cmd_export_pnach(args) -> int:
+    """Freeze the *live* plan into PCSX2's own patch format.
+
+    The point of building this from the same ``plan()`` the watchdog uses is that
+    the frozen file cannot quietly differ from what works: whatever the mod would
+    write this frame -- split, characters, pads, the tether, the per-view HUD, the
+    camera targets -- is what lands in the file.
+    """
     site = _int_or_none(args.site)
     cave_addr = _int_or_none(args.cave)
     table = _table(args)
@@ -346,12 +477,17 @@ def cmd_export_pnach(args) -> int:
                 pine, cave.CAVE_CODE_SIZE + cave.PARAM_BLOCK_SIZE, [EE_RAM, EE_SCRATCHPAD]
             )
         word = _read_word(pine, site)
-        entries = pnach.make_entries_from_config(
-            split_value=table.layout_id(config.split.value) if config.split is not Split.SINGLE else 0,
-            actor_count_addr=_optional_global(pine, table, "actor_count"),
-            partner_addr=_optional_global(pine, table, "partner_enabled"),
-            view_mode_addr=_optional_global(pine, table, "view_mode"),
-        )
+        mod = CoopMod(pine, table, config)
+        mod.resolve(_scan_ranges(args))
+        plan = mod.plan()
+        if config.split is not Split.SINGLE and not any(e.label.startswith("split=") for e in plan.entries):
+            return _fail(
+                f"the split value for {config.split.value!r} has not been measured, so there is "
+                "nothing honest to freeze yet (docs/DISCOVERY.md#view-mode)"
+            )
+        entries = plan.values()
+        for warning in plan.warnings:
+            print(f"  ! {warning}", file=sys.stderr)
         text = pnach.build_from_words(
             site=site,
             site_word=word,
@@ -439,16 +575,6 @@ def _read_word(pine: Pine, addr: int) -> int:
     return struct.unpack("<I", pine.read_bytes(addr, 4))[0]
 
 
-def _optional_global(pine: Pine, table: AddressTable, name: str) -> int | None:
-    entry = table.globals.get(name)
-    if entry is None:
-        return None
-    try:
-        return entry.resolve(pine)
-    except LookupError:
-        return None
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="aecoops",
@@ -498,6 +624,40 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--count", type=_number, default=24)
     p.set_defaults(func=cmd_discover_disasm)
 
+    # Reading finds what a value *is*; writing finds what it *does*. These four
+    # are the pair of halves: snapshot/diff compare two game states, watch/diff
+    # compare two moments, and poke is the only command in the toolkit that
+    # writes RAM for its own sake -- which is why it puts everything back.
+    for name, help_text, fn in (
+        ("snapshot", "save a region's words so a later state can be compared", cmd_discover_snapshot),
+        ("diff", "compare two saved snapshots, narrowed to small values if asked", cmd_discover_diff),
+        ("watch", "print what changes in a region over a few seconds", cmd_discover_watch),
+        ("poke", "write candidate values every frame for a few seconds, then undo", cmd_discover_poke),
+    ):
+        p = disc_sub.add_parser(name, help=help_text)
+        p.add_argument("--range", action="append", help="START:END in hex; repeatable (default: all EE RAM)")
+        if name == "snapshot":
+            p.add_argument("--out", required=True, help="file to write the snapshot to")
+        if name == "diff":
+            p.add_argument("before", help="snapshot taken first (a .json from `discover snapshot`)")
+            p.add_argument("after", help="snapshot taken second")
+            p.add_argument("--kind", default="changed", choices=["changed", "written", "settled"])
+            p.add_argument("--max-value", type=_number, default=None, help="only words whose both values are this small")
+            p.add_argument("--min-value", type=_number, default=None)
+            p.add_argument("--near", default=None, help="only addresses from here")
+            p.add_argument("--limit", type=_number, default=64)
+        if name == "watch":
+            p.add_argument("--span", type=float, default=0.5)
+            p.add_argument("--limit", type=_number, default=32)
+        if name == "poke":
+            p.add_argument("--site", required=True, help="the per-frame jal to intercept")
+            p.add_argument("--cave", default=None, help="cave address (default: auto-detect free RAM)")
+            p.add_argument("--set", action="append", metavar="ADDR=VALUE", help="a constant to write; repeatable")
+            p.add_argument("--copy", action="append", metavar="DEST=SOURCE", help="mirror one word onto another")
+            p.add_argument("--duration", type=float, default=3.0)
+            p.add_argument("--hz", type=float, default=None, help="expected frame rate (default 60)")
+        p.set_defaults(func=fn)
+
     p = sub.add_parser("find-free", help="locate RAM the game never writes to")
     p.add_argument("--size", type=_number, default=cave.CAVE_CODE_SIZE + cave.PARAM_BLOCK_SIZE)
     p.add_argument("--range", action="append", help="START:END in hex; repeatable")
@@ -517,6 +677,19 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--journal", default=str(JOURNAL), help="where to record what was changed")
         p.add_argument("--no-tether", action="store_true", help="do not mirror player one onto player two")
         p.add_argument("--tether-radius", type=float, default=0.0)
+        p.add_argument(
+            "--hud",
+            default="shared",
+            choices=[m.value for m in HudMode],
+            help="shared: leave the game's HUD alone (default) | per-view: one per player | hidden",
+        )
+        p.add_argument("--screen", default=None, help="the game's HUD space, e.g. 640x448 (pal, 640x512)")
+        p.add_argument("--no-cameras", action="store_true", help="do not point each viewport's camera at its own hero")
+        p.add_argument(
+            "--scan-range",
+            action="append",
+            help="START:END in hex to look for signatures in (faster, and some signatures only exist in a stage)",
+        )
         if name == "play":
             p.add_argument("--hz", type=float, default=4.0, help="watchdog passes per second")
             p.add_argument("--duration", type=float, default=None, help="stop after this many seconds")
@@ -527,6 +700,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--p1", default="kei")
     p.add_argument("--p2", default=None)
     p.add_argument("--split", default="vertical", choices=[s.value for s in Split])
+    p.add_argument("--hud", default="shared", choices=[m.value for m in HudMode])
+    p.add_argument("--screen", default=None)
+    p.add_argument("--no-cameras", action="store_true")
     p.add_argument("--cave", default=None)
     p.set_defaults(func=cmd_status)
 
@@ -546,6 +722,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--p1", default="kei")
     p.add_argument("--p2", default=None)
     p.add_argument("--split", default="vertical", choices=[s.value for s in Split])
+    p.add_argument("--hud", default="shared", choices=[m.value for m in HudMode])
+    p.add_argument("--screen", default=None)
+    p.add_argument("--no-cameras", action="store_true")
+    p.add_argument("--scan-range", action="append", help="START:END in hex to look for signatures in; repeatable")
     p.set_defaults(func=cmd_export_pnach)
 
     p = sub.add_parser("set", help="record a measurement in the address worksheet")

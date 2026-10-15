@@ -13,7 +13,9 @@ Checked here:
    function called once, ``$ra`` and ``$sp`` restored, control returned to
    ``site + 8``;
 5. the PINE protocol's framing, against a local server that speaks it;
-6. the address worksheet parses and reports itself honestly.
+6. the address worksheet parses and reports itself honestly;
+7. the HUD policy writes nothing on an unmeasured disc, and puts two instances in
+   the two halves on a measured one.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ import struct
 import sys
 from pathlib import Path
 
-from . import cave, mips, pnach
+from . import cave, hud, mips, pnach
 from .addresses import AddressTable
 from .r5900vm import R5900VM
 
@@ -274,6 +276,60 @@ def check_table(c: Checker) -> None:
     )
 
 
+def check_hud(c: Checker) -> None:
+    """The HUD policy: geometry that tiles, and writes that are gated on data.
+
+    The important one is the second half. A split-screen HUD is the first thing
+    this mod does that *moves something the player is looking at*, so the policy
+    has to be provably incapable of writing an address nobody measured.
+    """
+    c.section("HUD placement")
+    screen = hud.Screen(641, 449, margin=8)
+    left, right = screen.views("vertical")
+    c.check("the halves tile an odd width", left.w + right.w == 641 and right.x == left.w,
+            f"{left} {right}")
+    top, bottom = screen.views("horizontal")
+    c.check("the halves tile an odd height", top.h + bottom.h == 449, f"{top} {bottom}")
+    c.check("anchors sit inside their own view", screen.anchors("vertical")[1][0] >= left.w)
+    c.check("a single view is the whole frame", screen.views("single")[0].w == 641)
+    c.check("bad screen strings are refused", _raises(lambda: hud.Screen.parse("wide")))
+
+    table = AddressTable.load()
+    plan = hud.plan_hud(table, hud.HudMode.PER_VIEW, "vertical", hud.Screen())
+    c.check("an unmeasured worksheet writes nothing", plan.entries == [])
+    c.check("...and says why, with a pointer to the recipe", any("DISCOVERY.md#hud" in w for w in plan.warnings))
+    shared = hud.plan_hud(table, hud.HudMode.SHARED, "vertical", hud.Screen())
+    c.check("shared is silent and write-free", shared.entries == [] and shared.warnings == [])
+
+    # A fully measured disc, in memory: the policy's numbers, not the game's.
+    from .addresses import Field, Struct
+    from .scan import Discovery
+
+    struct = Struct(
+        name="hud",
+        base=Discovery(name="hud.base", addr=0x00181000),
+        stride=0x40,
+        count=2,
+        fields={
+            "visible": Field("visible", 0x00),
+            "x": Field("x", 0x04),
+            "y": Field("y", 0x08),
+            "owner": Field("owner", 0x0C),
+        },
+    )
+    table.structs["hud"] = struct
+    table.globals["hud_instances"] = Discovery(name="hud_instances", addr=0x00110024)
+    plan = hud.plan_hud(table, hud.HudMode.PER_VIEW, "vertical", hud.Screen(), resolved={"hud_instances": 0x00110024})
+    values = dict(plan.entries)
+    c.check("per-view asks for two instances", values.get(0x00110024) == 2)
+    c.check("each instance is visible", values.get(0x00181000) == 1 and values.get(0x00181040) == 1)
+    c.check("the second view is anchored in the right half", values.get(0x00181044) == 328, str(plan.labels[-4:]))
+    c.check("each instance is owned by a different pad", values.get(0x0018100C) == 0 and values.get(0x0018104C) == 1)
+    c.check("labels line up with writes", len(plan.labels) == len(plan.entries))
+    hidden = hud.plan_hud(table, hud.HudMode.HIDDEN, "vertical", hud.Screen(), resolved={"hud_instances": 0x00110024})
+    c.check("hidden switches the instances off rather than hiding one", hidden.entries == [(0x00110024, 0)])
+
+
 # ------------------------------------------------------------------- utilities
 
 
@@ -307,5 +363,6 @@ def run_all(verbose: bool = False) -> int:
     check_pnach(c)
     check_protocol(c)
     check_table(c)
+    check_hud(c)
     print(f"\n{c.passed} passed, {c.failed} failed")
     return 0 if c.failed == 0 else 1

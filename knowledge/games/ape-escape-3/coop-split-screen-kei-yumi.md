@@ -24,9 +24,17 @@ tags: ["coop", "split-screen", "code-cave", "mips", "pine", "pcsx2", "emulator",
 > Yumi. It is an emulator mod: a ~40 instruction interpreter installed into unused
 > EE RAM, reached by redirecting one `jal` in the game's per-frame path, which
 > re-applies the state the engine keeps overwriting. The mod's code is finished and
-> tested (180 tests, including the machine code executing in an R5900 interpreter),
+> tested (209 tests, including the machine code executing in an R5900 interpreter),
 > but **nobody has found the addresses on real hardware yet** -- that is the one
 > step left, and `docs/DISCOVERY.md` in the example folder is the procedure.
+>
+> Two facts about this game are worth knowing before believing any plan that says
+> "copy what the minigames do": **no AE3 minigame is split-screen** (they are
+> shared-screen, one picture, two players), and the story mode's own HUD is placed
+> for one screen. What the story renderer *does* have is a second view of the world
+> drawn into a rectangle -- the MonkeyCam, bottom-right, which L2 enlarges. That is
+> the load-bearing piece of evidence for a second viewport, and it is in the story
+> path rather than the minigame path. Details in "How the game works".
 
 ## Setup
 
@@ -76,12 +84,34 @@ the partner flag are recomputed by the stage logic; a character id is rewritten 
 the save-slot loader. Writing any of them once from outside does nothing observable.
 This is the central fact and the reason the mod cannot be a script.
 
-**The engine already contains everything co-op needs.** AE3's multiplayer minigames
-have two heroes in one stage with two viewports, so the actor structure, the
-animations, the net code and the two-view renderer all exist in the shipped binary.
-The story stage's renderer takes a *view mode* rather than being a different
-renderer. The mod is therefore mostly *un-hiding* existing capability, not adding
-it, which is why it is plausible at all from outside the game.
+**The engine already contains everything co-op needs -- but not in the shape the
+first pass assumed.** AE3's multiplayer minigames do put two heroes in one stage
+with two pads, so the actor structures, animations and pad handling exist twice
+over in the shipped binary; the story stage *selects* behaviour with a view mode
+rather than being a different program. **The one thing the minigames do not
+provide is two viewports:** they are shared-screen (Monkey Soccer, `Ultim-ape
+Fighter!`, the two-player ping pong and boxing modes: one picture, both players on
+it). So "the minigame renderer already draws two views of one stage" was a
+plausible theory with no evidence behind it, and the corrected evidence is in
+story mode itself:
+
+- the **MonkeyCam** -- a live picture-in-picture of a nearby monkey, drawn at the
+  bottom-right of an ordinary stage, **enlarged with L2 and restored with L2**. That
+  is the engine rendering a second *view of the world* into a rectangle whose
+  position and size it can change at runtime. For a split screen, the rectangle is
+  the whole problem;
+- the **L2 first-person zoom**, a second camera mode in the story path;
+- and on the HUD side, the minigames *do* have the reference implementation: one
+  HUD instance per player, each anchored to its own side, each reading that
+  player's own state. That half of the borrow survived.
+
+**The HUD is per-instance, and the minigames prove it.** A story HUD is global
+candy (jackets, coins, remaining monkeys) placed once for one screen; a two-player
+minigame's HUD is one instance per player, which is why `Ultim-ape Fighter!`'s two
+stamina bars are the pair to measure against. That gives the mod its HUD policy:
+tell the renderer there are two instances, mark both visible, anchor each inside
+its own view, and point each at its own pad where the engine has such a field --
+and write none of it until the user has measured the addresses.
 
 **A `jal` in a MIPS binary is one instruction, and the delay slot belongs to
 whoever follows.** Replacing `jal F` with `jal CAVE` keeps the very next
@@ -130,13 +160,24 @@ python -m aecoops discover counter   # optional sanity: 59.94 Hz or 50 Hz frame 
 python -m aecoops discover sweep --from-elf game.elf        # or --from-csv ghidra.csv
 python -m aecoops discover probe --site 0x... --cave 0x...  # confirm one candidate
 
+# compare two game states ("which small integer differs?") -- the tool that finds
+# a view mode and a HUD instance count:
+python -m aecoops discover snapshot --out stage.json
+python -m aecoops discover snapshot --out minigame.json
+python -m aecoops discover diff stage.json minigame.json --max-value 64
+# and, to test one candidate by eye, the only command here that writes:
+python -m aecoops discover poke --site 0x... --set 0x00110010=1 --duration 3
+
 # record what you found (see docs/DISCOVERY.md for every field)
 python -m aecoops set globals.frame_hook.addr=0x00123456 globals.frame_hook.verified=2026-10-15
 python -m aecoops set characters.kei=0 characters.yumi=1
 python -m aecoops set structs.actor.stride=0x1f0 structs.actor.fields.char_id.offset=0x38
+python -m aecoops set globals.hud_instances.addr=0x1a2b3c4
+python -m aecoops set structs.hud.stride=0x40 structs.hud.fields.x.offset=0x04
 
-python -m aecoops install            # cave + parameter block + trampoline
-python -m aecoops play --p1 kei --p2 yumi
+python -m aecoops status             # the writes it would make, and what is missing
+python -m aecoops install            # cave + parameter block + trampoline, plan armed
+python -m aecoops play --p1 kei --p2 yumi --hud per-view
 python -m aecoops eject --site 0x... --cave 0x...
 
 # once it works, freeze it
@@ -168,22 +209,37 @@ python -m aecoops export-pnach --out cheats/<CRC>.pnach
 5. **The discovery method.** The liveness oracle is tested against a simulated
    console driven at a known frame rate: a per-frame site is accepted, a 20 Hz site
    is rejected with its measured rate, a dead site is reported as never called, and
-   a probe always reinstalls what it displaced.
+   a probe always reinstalls what it displaced. The write half (`discover poke`) is
+   tested the same way: it lands its writes every frame, restores the instruction
+   and zeroes the cave afterwards -- including when the writes are refused mid-way
+   -- and refuses to run over an installed cave.
+6. **The HUD policy.** Two layers. Against a worksheet: an unmeasured disc produces
+   *no writes and a reason*; a measured one produces two instances, both visible,
+   each anchored inside its own view and owned by its own pad; `hidden` prefers
+   switching the instance count off over hiding instances; labels line up with
+   writes one for one. Against the simulated console: the writes land in the right
+   half **and survive the engine rewriting them every frame**, which is the claim
+   that matters and the one a policy test cannot make.
 
 `python -m aecoops selfcheck` runs the same checks on a user's machine in one
-command; the pytest suite is 180 tests in about 26 seconds.
+command (79 of them); the suite is 209 tests in about 23 seconds.
 
 **What was NOT verified.** Everything about the actual game:
 
 - the addresses (`frame_hook`, actor table, character ids, view mode) have not been
   measured on hardware by anyone. `data/addresses.json` says `NOT FOUND YET` and
   `docs/DISCOVERY.md` gives the recipe for each;
-- the assumption that forcing the story stage's view mode to a minigame's split
-  layout actually produces two clean viewports. It follows from the minigames
-  sharing the renderer, but it has not been seen;
+- whether the story renderer accepts a split view mode at all. It follows from the
+  story renderer's own secondary views (the MonkeyCam's rectangle, the L2 zoom)
+  that a second view is possible; it does not follow that one word selects it;
 - whether the second actor's logic will drive itself once `actor_count` is 2, or
   whether a further flag is needed;
-- HUD behaviour with two viewports, and the tether radius (implemented, untuned).
+- whether the story HUD has the fields the per-view policy wants at all: an
+  instance count, a stride between two instances, and anchors that are data rather
+  than baked into the draw call. Every one of those writes is gated on a
+  measurement, so the honest failure mode is "no second HUD" rather than a
+  corrupted one;
+- the tether radius (implemented, untuned).
 
 ## Gotchas
 
@@ -263,6 +319,30 @@ command; the pytest suite is 180 tests in about 26 seconds.
     fresh when using a `.pnach`, or re-apply from the journal
     (`PatchSet.apply_from_journal`) after loading a state.
 
+15. **Symptom:** `--hud per-view` (or any optional feature) runs, reports no error,
+    and visibly does nothing. **Cause:** every optional write is gated on an address
+    the user measured; an unmeasured feature degrades to the next mode down and only
+    says so in a note. **Fix:** `aecoops status` prints the writes it *would* make and
+    a `waiting on:` list -- that list is the to-do, and an empty one means every
+    measured thing is in use. This is the deliberate trade: a policy that guessed
+    would move a panel at best and write a plausible number over the gadget wheel's
+    rotation at worst.
+
+16. **Symptom:** a discovery tool reports writes that do not match what it wrote.
+    **Cause:** the list of writes and the list of labels were appended by different
+    code paths, and one path added two writes per label -- so every label after that
+    point described the previous entry. **Fix:** a single `emit(addr, value, label)`
+    that cannot do one without the other, plus a selfcheck asserting the two lists
+    are the same length. (A tool whose job is to be trustworthy has to be tested for
+    *reporting* as hard as for behaviour.)
+
+17. **Symptom:** a value poked once from outside appears to work -- the panel moves,
+    the flag flips -- and then reverts a moment later. **Cause:** the engine rewrites
+    its frame state mid-frame, so a one-shot write is indistinguishable from a write
+    the engine ignored while you were looking. **Fix:** `discover poke` writes every
+    frame for a few seconds and then restores. "It responded" and "it kept it" are
+    different observations, and only the second one predicts what happens in a stage.
+
 ## Assets
 
 None. There is no art, audio or 3D in this mod: it uses the characters the game
@@ -271,19 +351,31 @@ knows how to draw.
 
 ## Cost and time
 
-One session. Most of the time went into two things that are reusable: the R5900
-interpreter used as a test oracle for generated machine code, and the liveness
-oracle that turns "is this function called every frame?" into a measurement.
+One session, then a second one for the two-viewport HUD (which is where the
+"minigames are split-screen" assumption died). Most of the time went into things
+that are reusable: the R5900 interpreter used as a test oracle for generated
+machine code, the liveness oracle that turns "is this function called every frame?"
+into a measurement, and the write half of discovery -- snapshot, diff and poke --
+which turns "which word does this?" into a five-minute experiment instead of an
+afternoon of guessing.
 
 ## Open questions
 
 1. Does the story stage's view mode *hold* when forced, or does the stage camera
    code reset it mid-frame in a place the hook cannot reach? The fallback is to hook
    the camera code instead of the stage update.
-2. Is the split one value or a pair (viewport count + layout)? The minigames may
-   write both.
+2. Is the split one value or a pair (viewport count + layout)? If neither holds, the
+   next layer down is the *rectangle* -- the MonkeyCam's position and size, which is
+   the one structure this engine is known to draw a second view into. Two words
+   change when L2 enlarges it; those are the pair to find.
 3. Does the second actor need a flag beyond `actor_count` to be simulated? If the
    actor exists but its logic never runs, the tether masks it -- turn the tether off
    to find out.
-4. Where does the HUD belong with two viewports? The minigames must draw a per-view
-   HUD already; finding that code would be the next real win.
+4. Does the story HUD have an instance table at all? The policy's per-view mode
+   needs three things from it -- a count, a stride, movable anchors -- and the
+   measurement recipe is `Ultim-ape Fighter!`'s two stamina bars. If the answer is
+   no, the fallback is `hidden` plus the pause menu, which is a worse answer but an
+   honest one, and it is already implemented.
+5. Does the HUD's anchor space match the frame? Per-view placement assumes
+   `640x448` (or `--screen pal`). It is a flag rather than a constant because the
+   first person to measure it will know.

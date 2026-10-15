@@ -46,9 +46,14 @@ from .mips import NOP, Program, load_immediate
 
 MAGIC = b"AE3C"
 CAVE_CODE_SIZE = 0x1C0
-PARAM_BLOCK_SIZE = 0x100
+# 0x180 is 46 entry slots: the mandatory writes (split, actor count, partner flag,
+# character ids, pad ports, actives) are about ten, and the optional sets -- the
+# tether, the per-view HUD, the per-view camera targets -- can add a dozen more.
+# The block is still one allocation inside the free-RAM search, so the only cost
+# of the headroom is 0x80 more bytes of RAM nobody was using.
+PARAM_BLOCK_SIZE = 0x180
 ENTRIES_OFFSET = 0x10
-MAX_ENTRIES = 24
+MAX_ENTRIES = 40
 
 TICKS = "ticks"
 

@@ -56,6 +56,25 @@ decomp can take billions of tokens.
     times out); after a `0xFF` the server resets, so reconnect rather than resync. A host-side writer
     loses every race against the engine's own per-frame state -- put the effect *inside* the game
     (a code cave reached by redirecting one `jal` in a per-frame path) and keep the policy outside.
+  - **The write half of discovery.** Reading memory finds what a value *is*; only writing
+    finds what it *does*. Two tools carry most of the weight: (1) snapshot a region to a file,
+    change the game state, snapshot again, and diff narrowed to "words that differ and are
+    small integers" -- the two states worth comparing (a level versus a menu, one view versus
+    two) are usually minutes and a transition apart, so they cannot be diffed from one
+    process; (2) a "poke" that writes candidate values *every frame* for a few seconds and
+    then restores everything. A one-shot write cannot distinguish "the engine responded" from
+    "the engine overwrote it while you were looking", and it is the difference between a
+    value that works in a menu and one that works in gameplay. Make the poke refuse to run
+    on top of an installed cave and restore in a `finally`.
+  - **Gate every optional write on a measured address.** A mod that pokes state the engine
+    owns (HUD placement, camera targets, viewport count) should degrade mode by mode -- and
+    say which field it is waiting on -- rather than guessing a plausible number. Guessing
+    turns "the mod did nothing" into "the mod moved something nobody was looking at and the
+    save no longer loads". The same rule applies to *evidence*: before copying what a
+    minigame does, check that it does it (one project spent a design on "the minigame renderer
+    already draws two views" before finding that the game's two-player minigames are all
+    shared-screen, and that the second view it needed was the story mode's own
+    picture-in-picture camera).
 - **ROM hacks:**
   - patch code or data in the ROM and distribute an IPS/BPS/xdelta patch, never the ROM;
   - existing editors: Lunar Magic (SMW), Wiimm's SZS tools (Mario Kart Wii tracks), Pokémon hacking tools.

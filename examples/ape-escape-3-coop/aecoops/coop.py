@@ -41,7 +41,8 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from . import cave
+from . import cave, hud
+from .hud import HudMode, Screen
 from .addresses import AddressTable, TableError
 from .patcher import PatchSet
 from .pine import EmuInfo, Pine, PineError, PineUnusable
@@ -71,6 +72,17 @@ class CoopConfig:
     p1: str = KEI
     p2: str = YUMI
     split: Split = Split.VERTICAL
+    # What the split does to the HUD. `shared` writes nothing at all, which is why
+    # it is the default: two players reading one monkey counter is a real answer,
+    # and the two other modes need measurements the worksheet probably does not
+    # have yet. See hud.py.
+    hud_mode: HudMode = HudMode.SHARED
+    # The game's own HUD coordinate space, used only to place a per-view HUD. Both
+    # defaults are PS2 NTSC; `--screen pal` is 640x512.
+    screen: Screen = field(default_factory=Screen)
+    # Give each viewport's camera its own hero. Only ever written when the camera
+    # structure has been measured.
+    cameras_follow_views: bool = True
     # The stage quota is shared by default: two heroes, one monkey count, so the
     # stage still ends where it always did. Set False for "either player can
     # clear the stage alone".
@@ -83,12 +95,16 @@ class CoopConfig:
     tether_radius: float = 0.0
     # Which hero the camera prefers when the split is asymmetric.
     camera_follows: str = KEI
+    # Two of the same hero is a debug shape, not co-op: the stage keys the second
+    # actor's model and morphs off the character id. It is allowed only when the
+    # caller says so out loud (CoopConfig.mirror()).
+    allow_twins: bool = False
 
     def validate(self) -> None:
         for who in (self.p1, self.p2):
             if who not in (KEI, YUMI):
                 raise ValueError(f"unknown character {who!r}: pick {KEI!r} or {YUMI!r}")
-        if self.p1 == self.p2:
+        if self.p1 == self.p2 and not self.allow_twins:
             raise ValueError(
                 "both players picked the same hero. Ape Escape 3's stage code keys the second "
                 "actor's model and morphs off the character id, so two of the same is unsupported "
@@ -100,7 +116,7 @@ class CoopConfig:
     @classmethod
     def mirror(cls, who: str = KEI) -> "CoopConfig":
         """Both screens, one hero: a debug shape, not a co-op mode."""
-        return cls(p1=who, p2=who)
+        return cls(p1=who, p2=who, allow_twins=True)
 
 
 @dataclass
@@ -151,6 +167,58 @@ class CoopError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class Entry:
+    """One write the cave should make every frame.
+
+    ``essential`` is the mod's own priority: the writes that *are* co-op (the
+    split, the second actor, who is who) versus the ones that make it nicer (the
+    tether, the HUD, the per-view cameras). If a fully measured configuration ever
+    exceeds the cave's entry budget, the optional ones are dropped first and the
+    user is told which, instead of the whole install failing.
+    """
+
+    addr: int
+    value: int
+    label: str
+    essential: bool = True
+
+
+@dataclass
+class Plan:
+    """The frame's intended writes, in the order they will be applied."""
+
+    entries: list[Entry] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    def values(self) -> list[tuple[int, int]]:
+        return [(e.addr, e.value) for e in self.entries]
+
+    def labels(self) -> list[str]:
+        return [e.label for e in self.entries]
+
+    def trimmed_to_budget(self, budget: int = cave.MAX_ENTRIES) -> "Plan":
+        """Keep every essential entry, then optional ones in order, up to ``budget``."""
+        if len(self.entries) <= budget:
+            return self
+        kept = [e for e in self.entries if e.essential]
+        dropped = [e for e in self.entries if not e.essential]
+        room = max(0, budget - len(kept))
+        if len(kept) > budget:  # cannot happen with the current table, but be honest
+            dropped, kept = kept[budget:] + dropped, kept[:budget]
+        else:
+            dropped = dropped[room:]
+        out = Plan(
+            entries=kept + [e for e in self.entries if not e.essential][:room],
+            warnings=list(self.warnings),
+        )
+        out.warnings.append(
+            f"{len(dropped)} optional writes did not fit the cave's {budget}-entry budget and "
+            "were left out this run: " + ", ".join(e.label for e in dropped[:6])
+        )
+        return out
+
+
 class CoopMod:
     """Installs and runs co-op on a live PCSX2 session."""
 
@@ -175,10 +243,44 @@ class CoopMod:
         self._last_tick = 0
         self._tick_stall = 0
         self._independent_at: float | None = None
+        self._hud_plan = hud.HudPlan(mode=self.config.hud_mode)
+        self._notes_seen: dict[str, str] = {}
+        # Where signatures are looked for. None means "everywhere the worksheet's
+        # defaults cover"; a stage-only signature is much faster to find inside one.
+        self._scan_ranges: list[tuple[int, int]] | None = None
 
     # ------------------------------------------------------------------ install
 
-    def install(self, cave_addr: int | None = None, site: int | None = None, journal: Path | None = None) -> InstallReport:
+    def resolve(self, ranges: list[tuple[int, int]] | None = None) -> dict[str, int]:
+        """Resolve every global against the running game. Reads only, writes nothing.
+
+        Split out of :meth:`install` so that ``export-pnach`` can freeze exactly
+        what a live run would write without a cave ever touching the game.
+
+        Structure bases are resolved here too, for the same reason the table allows
+        a signature instead of an address: a pattern survives a different pressing
+        of the disc, and a base that is only known by signature would otherwise be
+        invisible to everything that pokes a field through it.
+        """
+        if ranges is not None:
+            self._scan_ranges = list(ranges)
+        self._resolved = self.table.resolve_all(self.pine, self._scan_ranges)
+        for name, struct in self.table.structs.items():
+            if struct.base.addr is not None or not struct.base.signature:
+                continue
+            try:
+                struct.base.addr = struct.base.resolve(self.pine, self._scan_ranges or None)
+            except LookupError as exc:
+                self._note_once(f"struct:{name}", f"{name}.base could not be found: {exc}")
+        return self._resolved
+
+    def install(
+        self,
+        cave_addr: int | None = None,
+        site: int | None = None,
+        journal: Path | None = None,
+        ranges: list[tuple[int, int]] | None = None,
+    ) -> InstallReport:
         """Resolve addresses, pick free RAM, and drop the interpreter in.
 
         Idempotent: running it twice does not install a second cave.
@@ -197,10 +299,11 @@ class CoopMod:
                     return report
                 report.patchset = f"{applied.patchset} ({len(applied.applied)} new)"
 
-            self._resolved = self.table.resolve_all(self.pine)
+            self.resolve(ranges)
         except (TableError, PineError, PineUnusable) as exc:
             report.errors.append(str(exc))
             return report
+
 
         site = site if site is not None else self._resolved.get("frame_hook")
         if site is None:
@@ -223,21 +326,37 @@ class CoopMod:
         self._original_site = self.pine.read_bytes(site, 4)
         self._interpreter = cave.build_interpreter(cave_addr, site, cave.callee_of_jal(word, site))
 
+        # Build the plan before anything is written: it decides both the entries to
+        # arm and the warnings to report, and it reads memory rather than writing.
+        plan = self.plan()
+        if plan.warnings:
+            report.notes += [f"! {warning}" for warning in plan.warnings]
+
         if self._is_installed():
             report.ok = True
             report.cave, report.site, report.callee = cave_addr, site, self._interpreter.callee
             report.notes.append("cave was already installed; left as it is")
+            report.notes.append(f"hud: {self._hud_plan.describe()}")
             return report
 
         # Order matters: the cave and its block exist before anything jumps to it.
+        # The block is armed with this frame's entries rather than left empty, so
+        # co-op is already on during the first frame after the install instead of
+        # during the first frame after the first watchdog pass.
         self.pine.write_bytes(cave_addr, self._interpreter.code)
-        self.pine.write_bytes(cave.param_block_at(cave_addr), cave.initial_param_block())
+        self.pine.write_bytes(
+            cave.param_block_at(cave_addr), cave.encode_block(plan.values(), cave.MAX_ENTRIES)
+        )
         self.pine.write_bytes(site, self._interpreter.trampoline)
 
         report.ok = True
         report.cave = cave_addr
         report.site = site
         report.callee = self._interpreter.callee
+        report.notes.append(f"{len(plan.entries)} writes armed")
+        report.notes.append(f"hud: {self._hud_plan.describe()}")
+        for warning in self._hud_plan.warnings:
+            report.notes.append(f"! {warning}")
         return report
 
     def _find_cave(self) -> int:
@@ -284,29 +403,32 @@ class CoopMod:
 
     # -------------------------------------------------------------- per-frame
 
-    def entries(self) -> list[tuple[int, int]]:
-        """The (address, value) pairs the game should re-apply this frame.
+    def plan(self) -> Plan:
+        """Everything the game should re-apply this frame, with its priorities.
 
-        Everything here is idempotent state, never one-shot input: the engine
-        resets it, we set it again, and the result is stable rather than
-        oscillating.
+        The order is deliberate: the shape of the game first (split, two actors,
+        who is who), then the conveniences (tether, HUD, cameras), so that a
+        truncated plan still plays a recognisable co-op session.
         """
         table, cfg = self.table, self.config
-        out: list[tuple[int, int]] = []
+        out = Plan()
 
         globals_ = self._resolved
 
-        def set_global(name: str, value: int, label: str) -> None:
+        def set_global(name: str, value: int, label: str, essential: bool = True) -> None:
             addr = globals_.get(name)
             if addr is None:
                 return
-            out.append(cave.const(addr, value))
-            labels.append(label)
+            out.entries.append(Entry(cave.const(addr, value)[0], value, label, essential))
 
-        labels: list[str] = []
         # 1. two viewports
         if cfg.split is not Split.SINGLE:
-            set_global("view_mode", table.layout_id(cfg.split.value), f"split={cfg.split.value}")
+            try:
+                set_global("view_mode", table.layout_id(cfg.split.value), f"split={cfg.split.value}")
+            except TableError as exc:
+                # An unmeasured worksheet is the normal state on a first run, and
+                # `status` has to be readable in exactly that state.
+                out.warnings.append(f"the split cannot be applied yet: {exc}")
         # 2. two live heroes
         set_global("actor_count", 2, "actor_count=2")
         set_global("partner_enabled", 1, "partner=on")
@@ -317,22 +439,100 @@ class CoopMod:
             base = actor.base.addr
             try:
                 for slot, who in ((Slot.P1, cfg.p1), (Slot.P2, cfg.p2)):
-                    out.append(cave.const(actor.address_of(base, slot.value, "char_id"), table.character_id(who)))
-                    labels.append(f"p{slot.value + 1}={who}")
-                    out.append(cave.const(actor.address_of(base, slot.value, "pad_port"), slot.value))
-                    out.append(cave.const(actor.address_of(base, slot.value, "active"), 1))
+                    out.entries.append(
+                        Entry(
+                            actor.address_of(base, slot.value, "char_id"),
+                            table.character_id(who),
+                            f"p{slot.value + 1}={who}",
+                        )
+                    )
+                    out.entries.append(
+                        Entry(
+                            actor.address_of(base, slot.value, "pad_port"),
+                            slot.value,
+                            f"p{slot.value + 1}=pad {slot.value}",
+                        )
+                    )
+                    out.entries.append(
+                        Entry(actor.address_of(base, slot.value, "active"), 1, f"hero{slot.value + 1}=on")
+                    )
             except TableError as exc:
-                labels.append(f"characters skipped ({exc})")
+                out.warnings.append(f"per-player character ids skipped: {exc}")
 
         # 4. the tether: mirror the partner onto player one until it can stand up
         if cfg.tether_until_independent and not self.independent:
-            out.extend(self._tether_entries())
+            out.entries.extend(self._tether_entries())
 
         if cfg.share_quota:
             set_global("quota_shared", 1, "quota shared")
-        return out
 
-    def _tether_entries(self) -> list[tuple[int, int]]:
+        # 5. who each half of the screen is looking at
+        if cfg.cameras_follow_views and cfg.split is not Split.SINGLE:
+            out.entries.extend(self._camera_entries())
+
+        # 6. the HUD, for a screen that is now two screens
+        hud_plan = hud.plan_hud(table, cfg.hud_mode, cfg.split.value, cfg.screen, resolved=self._resolved)
+        out.entries.extend(
+            Entry(addr, value, label, essential=False)
+            for (addr, value), label in zip(hud_plan.entries, hud_plan.labels)
+        )
+        out.warnings.extend(hud_plan.warnings)
+        self._hud_plan = hud_plan
+
+        # Notes about missing measurements surface on the pass after they are
+        # first noticed, and only once.
+        out.warnings.extend(self._notes_seen.values())
+        self._notes_seen.clear()
+
+        return out.trimmed_to_budget()
+
+    def entries(self) -> list[tuple[int, int]]:
+        """The (address, value) pairs the game should re-apply this frame.
+
+        Everything here is idempotent state, never one-shot input: the engine
+        resets it, we set it again, and the result is stable rather than
+        oscillating.
+        """
+        return self.plan().values()
+
+    def _camera_entries(self) -> list[Entry]:
+        """Point each viewport's camera at its own hero.
+
+        Only the *target* is written: distance, height and behaviour belong to the
+        stage's own camera code, and overriding them is how a split ends up with
+        two cameras inside a wall. Without a measured camera structure this
+        returns nothing and the engine's own path is left alone.
+        """
+        camera = self.table.structs.get("camera")
+        if camera is None or camera.base.addr is None:
+            return []
+        if not camera.stride and camera.count > 1:
+            self._note_once(
+                "camera_targets",
+                "structs.camera.stride is 0, so both viewports would resolve to the same camera; "
+                "measure the stride between the two camera slots (docs/DISCOVERY.md#camera)",
+            )
+            return []
+        try:
+            primary = 0 if self.config.camera_follows == self.config.p1 else 1
+            out = []
+            for view, hero in ((0, primary), (1, 1 - primary)):
+                addr = camera.address_of(camera.base.addr, view, "target_actor")
+                out.append(Entry(addr, hero, f"view{view + 1}->hero{hero + 1}", essential=False))
+            return out
+        except TableError:
+            return []
+
+    def _note_once(self, key: str, message: str) -> None:
+        """Remember a missing measurement; it is reported once, on the next pass.
+
+        Repeating the same line in every watchdog report would bury the warnings
+        that are actually new, and this one cannot change while the mod runs.
+        """
+        if key not in self._notes_seen:
+            self._notes_seen[key] = message
+
+    def _tether_entries(self) -> list[Entry]:
         """Mirror player one onto player two, *in game*, with indirect entries.
 
         Doing it with constants would need a read every tick and would lag by a
@@ -343,12 +543,13 @@ class CoopMod:
         if actor is None or actor.base.addr is None or not actor.stride:
             return []
         base = actor.base.addr
-        out = []
+        out: list[Entry] = []
         try:
             for field_name in ("pos_x", "pos_y", "pos_z", "yaw"):
                 src = actor.address_of(base, Slot.P1.value, field_name)
                 dst = actor.address_of(base, Slot.P2.value, field_name)
-                out.append(cave.copy(dst, src))
+                addr, value = cave.copy(dst, src)
+                out.append(Entry(addr, value, f"hero2.{field_name}=follow hero1", essential=False))
         except TableError:
             return []
         return out
@@ -395,7 +596,12 @@ class CoopMod:
             report.warnings.append(str(exc))
             return report
 
-        entries = self.entries()
+        plan = self.plan()
+        entries = plan.values()
+        report.wrote = plan.labels()[:6]
+        if len(plan.labels()) > 6:
+            report.wrote.append(f"+{len(plan.labels()) - 6} more")
+        report.warnings.extend(plan.warnings)
         try:
             # Only the entry list is rewritten. The header's tick counter and
             # applied count belong to the game and are how we tell whether the
@@ -494,6 +700,7 @@ class CoopMod:
             info = self.pine.info()
         except PineError:
             pass
+        plan = self.plan()
         return {
             "installed": bool(self._cave),
             "cave": self._cave,
@@ -501,6 +708,8 @@ class CoopMod:
             "p1": self.config.p1,
             "p2": self.config.p2,
             "split": self.config.split.value,
+            "hud": hud.describe_for(self.table, self.config.hud_mode),
+            "writes": len(plan.entries),
             "independent": self.independent,
             "tick": self._last_tick,
             "disc": str(info) if info else "unreachable",
