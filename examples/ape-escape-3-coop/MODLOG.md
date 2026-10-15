@@ -405,6 +405,42 @@ the terminal -- Termux plus `adb forward tcp:28011 tcp:28011` tunnels the phone'
 localhost to the computer's over USB, and `discover try` is honestly *better* there,
 because the emulator screen is in front of you while it asks.
 
+## Seventh pass: `aecoops verify`, the check between finding and trusting
+
+Finding a number and trusting a number are different jobs, and until now the mod only
+did the first. The gap is where the worst failure lives: a transposed hex digit in a
+character id, a struct base that landed on the neighbouring slot, an offset that is
+really the next field. None of those stops an install -- they write a plausible value
+into whatever actually lives at that address, and the stage does something strange
+fifteen minutes later.
+
+`aecoops verify` reads the worksheet back and checks it against the running game,
+before anything is written. The checks are mostly *cross* checks, because that is what
+a single measurement cannot fake:
+
+- the hook site holds a `jal` (a wrong address is usually not even an instruction);
+- the actor table, read through its measured base, stride and offsets, says slot 0 is
+  one of the two hero ids -- two independent measurements that have to agree, which
+  makes it the strongest check in the module;
+- slot 0's pad port is 0 or 1, which is the check that catches a wrongly-placed base
+  in cases where the character id happens to look plausible;
+- the layout words are values the renderer is plausibly using, and two layouts that
+  came out *equal* is a measurement that has not separated them yet;
+- a call's address is word-aligned and not all zeros -- empty memory, not a function;
+- the viewport rectangles land on the screen.
+
+Nothing here writes, which is what makes it usable the moment something looks wrong,
+including over the phone tunnel. `WARN` fails the command's exit status; `note` is a
+question rather than a fault (a count reading 900 usually means the address is right
+and the meaning is not).
+
+Two things the tests forced into the open. **The honest bound**: an accidentally-placed
+base whose words happen to look plausible passes every check, and there is a test that
+documents exactly that -- the recipe's answer is to verify with two saves, one per
+hero, so the same address has to say two different things. And **a checker that cannot
+fail is decoration**, so each way of being wrong is a test: this is the `MAX_ENTRIES`
+lesson from the second pass, applied to a whole new axis.
+
 ## What is not done
 
 **The addresses.** Every field the mod needs is in

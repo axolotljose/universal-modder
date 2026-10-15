@@ -613,6 +613,7 @@ Then check yourself:
 
 ```bash
 aecoops doctor                 # everything resolved?
+aecoops verify                 # do the numbers agree with each other and the game?
 aecoops status --hud shared    # what would be written, and what is still missing
 aecoops install --hud shared   # install; the plan is armed in the same pass
 aecoops play --hud shared      # co-op

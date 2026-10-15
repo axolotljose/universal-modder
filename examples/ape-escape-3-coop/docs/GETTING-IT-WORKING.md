@@ -103,7 +103,39 @@ python -m aecoops set structs.actor.fields.char_id.offset=0x38
 #    ...and so on; doctor lists every field name the mod wants
 ```
 
-## 6. What would it do? (1 minute)
+## 6. Does the worksheet agree with the game? (2 minutes)
+
+Before anything is written, read your measurements back and check them against each
+other and against the running game. Finding a number and *trusting* a number are
+different jobs, and this is the second one:
+
+```bash
+python -m aecoops verify
+```
+
+```
+  ok   frame_hook                   jal at 0x00123450 -> 0x001A2B00
+  ok   characters.kei               id 0
+  ok   actor.char_id                slot 0 says 0, which is characters.kei -- the base, the stride and the offset agree
+  ok   actor.pad_port               slot 0 answers pad 0
+  WARN layouts                      vertical, horizontal are both 3: the two splits would be the same value
+  ok   calls.spawn_partner          0x00160000 holds 0x27bdffe8 (arg 0x1, once)
+
+6 entries read back and consistent. Nothing was written; `aecoops install` is the next step.
+```
+
+It reads and never writes, so it is safe at any point — in a stage, in a menu, with a
+cave installed or not. `WARN` lines are the ones that matter: a hook site that does
+not hold a `jal`, a character id that contradicts the actor table (two measurements
+that must agree, which makes it the strongest check here), a call whose address is all
+zeros — an address like that "works" until you install it, and then the stage dies.
+`note` lines are questions rather than faults: a count that reads 900 when it should
+be 1 or 2 usually means the address is right and the *meaning* is not.
+
+It is not a substitute for playing. It can tell you the numbers agree with each other
+and with the memory around them; it cannot tell you the second hero is fun to control.
+
+## 7. What would it do? (1 minute)
 
 ```bash
 python -m aecoops status
@@ -113,7 +145,7 @@ python -m aecoops status
 your to-do.** It is safe to run at any point, at any stage of measurement — it reads,
 and writes nothing.
 
-## 7. Co-op (5 minutes)
+## 8. Co-op (5 minutes)
 
 ```bash
 python -m aecoops install
@@ -134,7 +166,7 @@ If it runs but the screen doesn't split, that is the expected next thing to chas
 box lives) and §10 (calling the game's own view-mode setter instead of writing to the
 word). Both are implemented and were built for exactly this outcome.
 
-## 8. Freeze it (1 minute)
+## 9. Freeze it (1 minute)
 
 ```bash
 python -m aecoops export-pnach --out cheats/<your CRC>.pnach
@@ -222,7 +254,8 @@ Raw output, messy is fine — these four cover almost every case:
 One command produces all of it:
 
 ```bash
-python -m aecoops share --extra sweep.txt --out bundle.txt
+python -m aecoops verify > verify.txt          # does the worksheet agree with the game?
+python -m aecoops share --extra sweep.txt --extra verify.txt --out bundle.txt
 ```
 
 `share` never includes the ISO, a savestate, a RAM dump, extracted files or a

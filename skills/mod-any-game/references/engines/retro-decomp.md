@@ -101,6 +101,20 @@ decomp can take billions of tokens.
     stops, what happens to a candidate that cannot be tried, whether each poke is really
     undone before the next -- becomes assertable. Print every candidate as it is tried, not
     just the winner, so a redirected log is the record of what was ruled out.
+  - **Check the measurements against each other before installing them.** Finding an
+    address and trusting it are different jobs, and the gap between them is where the
+    worst failure lives: a transposed hex digit, a struct base on the neighbouring slot,
+    an offset that is really the next field. None of those stops an install -- they write
+    a plausible value into whatever lives there, and the symptom shows up minutes later
+    as a stage doing something strange. Before writing anything, read every measured
+    entry back and cross-check: the hook site holds the instruction you think it does;
+    the struct's first slot says one of the ids you measured *independently* (two
+    measurements that must agree is the strongest check available, and a field with two
+    legal values -- a pad port, a flag -- catches a misplaced base even when other words
+    look plausible); a function address is aligned and not all zeros; two values you
+    expect to differ are not equal. Fail with a non-zero exit status on the real
+    problems and print the rest as questions, and write a test for every way of being
+    wrong, because a checker that cannot fail is decoration.
   - **The person measuring is often not at the machine measuring.** Anything that needs
     a running emulator to measure also needs the measurement to travel: to a chat, to a
     phone, to whoever is helping. Build the hand-off and make it *structural* -- a

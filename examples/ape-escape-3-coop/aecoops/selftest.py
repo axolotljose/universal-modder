@@ -25,7 +25,10 @@ Checked here:
     time it says "here is how to measure this";
 11. the bundle `aecoops share` prints is one paste, plain ASCII, and carries no
     game bytes -- it is the thing that crosses from the machine running the game to
-    wherever the conversation is.
+    wherever the conversation is;
+12. the pre-flight check catches the ways a worksheet is wrong -- a hook that is not
+    a `jal`, a character id that contradicts the actor table, a call into empty
+    memory -- and reads rather than writes.
 """
 
 from __future__ import annotations
@@ -35,7 +38,7 @@ import sys
 from pathlib import Path
 
 from . import cave, hud, mips, pnach, views
-from .addresses import AddressTable
+from .addresses import AddressTable, CallSpec
 from .r5900vm import R5900VM
 
 FAIL = "FAIL"
@@ -529,6 +532,64 @@ def doc_pointer_problems(root: Path | None = None) -> list[str]:
     return problems
 
 
+def check_verify(c: Checker) -> None:
+    """The pre-flight check: does the worksheet agree with the game?"""
+    c.section("worksheet pre-flight")
+    from . import verify
+
+    class _Words:
+        def __init__(self, words) -> None:
+            self.words = words
+
+        def read32(self, addr: int) -> int:
+            return self.words.get(addr, 0)
+
+    c.check("a worksheet with nothing measured is not a problem", verify.check_table(_Words({}), AddressTable.load()).skipped)
+
+    table = AddressTable.load()
+    table.globals["frame_hook"].addr = 0x00123450
+    table.characters = {"kei": 0, "yumi": 1}
+    table.layouts = {"single": 0, "vertical": 3}
+    table.structs["actor"].base.addr = 0x00180000
+    table.structs["actor"].stride = 0x100
+    for name, offset in {"active": 0x00, "char_id": 0x04, "pad_port": 0x08}.items():
+        table.structs["actor"].fields[name].offset = offset
+    table.calls = [CallSpec(name="spawn_partner", addr=0x00160000, arg=1)]
+    good = {
+        0x00123450: 0x0C048D14,
+        0x00180004: 0,
+        0x00180008: 0,
+        0x00160000: 0x27BDFFE8,
+    }
+    report = verify.check_table(_Words(good), table)
+    c.check("a consistent table has no problems", not report.problems, report.text())
+    c.check("...and says so", "consistent" in report.text())
+
+    broken = dict(good)
+    broken[0x00123450] = 0x27BDFFE8  # the instruction body, not the call to it
+    problems = [p.message for p in verify.check_table(_Words(broken), table).problems]
+    c.check("a hook that is not a jal is caught", any("not a jal" in m for m in problems), str(problems))
+
+    broken = dict(good)
+    broken[0x00180004] = 42
+    problems = [p.message for p in verify.check_table(_Words(broken), table).problems]
+    c.check("a character id that contradicts the table is caught", any("neither measured" in m for m in problems))
+
+    broken = dict(good)
+    del broken[0x00160000]
+    problems = [p.message for p in verify.check_table(_Words(broken), table).problems]
+    c.check("a call into empty memory is caught", any("all zeros" in m for m in problems))
+    c.check(
+        "a misaligned call address is caught",
+        any(
+            "not a word-aligned" in p.message
+            for p in verify.check_table(_Words(good), type(table)(
+                game=table.game, calls=[CallSpec(name="x", addr=0x00160002, arg=0)]
+            )).problems
+        ),
+    )
+
+
 def check_share(c: Checker) -> None:
     """The pasteable bundle: small, plain, and incapable of carrying game data."""
     c.section("the measurement bundle")
@@ -605,5 +666,6 @@ def run_all(verbose: bool = False) -> int:
     check_calls(c)
     check_pointers(c)
     check_share(c)
+    check_verify(c)
     print(f"\n{c.passed} passed, {c.failed} failed")
     return 0 if c.failed == 0 else 1

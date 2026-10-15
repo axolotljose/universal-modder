@@ -26,7 +26,7 @@ tags: ["coop", "split-screen", "code-cave", "mips", "pine", "pcsx2", "emulator",
 > re-applies the state the engine keeps overwriting -- and, where state is not
 > enough, **calls the game's own functions** (a write can set `actor_count`, it
 > cannot construct a second actor). The mod's code is finished and
-> tested (293 tests, including the machine code executing in an R5900 interpreter),
+> tested (315 tests, including the machine code executing in an R5900 interpreter),
 > but **nobody has found the addresses on real hardware yet** -- that is the one
 > step left, and `docs/DISCOVERY.md` in the example folder is the procedure.
 >
@@ -242,7 +242,16 @@ python -m aecoops export-pnach --out cheats/<CRC>.pnach
    measured one produces two halves that tile the frame. Against the simulated
    console the rectangles hold while the stand-in renderer rebuilds its own every
    frame, and `--no-viewports` leaves the renderer's own viewports alone.
-7. **The HUD policy.** Two layers. Against a worksheet: an unmeasured disc produces
+7. **The worksheet pre-flight.** `aecoops verify` reads the measured entries back and
+   checks them against the running game before anything is written: the hook site
+   holds a `jal`, slot 0 of the actor table says one of the two measured hero ids
+   (two independent measurements that must agree), its pad port is 0 or 1, two layout
+   words that came out equal are flagged as not yet separated, a call's address is
+   word-aligned and not empty memory, and the rectangles land on the screen. Each way
+   of being wrong is a test, because a checker that cannot fail is decoration -- and
+   so is the bound: a base that landed on the wrong slot whose words happen to look
+   plausible passes, which is why the recipe says to verify with two saves.
+8. **The HUD policy.** Two layers. Against a worksheet: an unmeasured disc produces
    *no writes and a reason*; a measured one produces two instances, both visible,
    each anchored inside its own view and owned by its own pad; `hidden` prefers
    switching the instance count off over hiding instances; labels line up with
@@ -251,10 +260,10 @@ python -m aecoops export-pnach --out cheats/<CRC>.pnach
    that matters and the one a policy test cannot make.
 
 `python -m aecoops selfcheck` runs the same checks on a user's machine in one
-command (123 of them, including that the call region does not overlap the write
+command (130 of them, including that the call region does not overlap the write
 list, that every `docs/DISCOVERY.md#key` a message prints still resolves to a
-section, and that the pasteable bundle carries no game bytes); the suite is 293
-tests in about 30 seconds.
+section, and that the pasteable bundle carries no game bytes); the suite is 315
+tests in about 31 seconds.
 
 **What was NOT verified.** Everything about the actual game:
 

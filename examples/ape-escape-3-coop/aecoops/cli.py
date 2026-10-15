@@ -24,7 +24,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import cave, discover, hud, mips, pnach, share, views
+from . import cave, discover, hud, mips, pnach, share, verify, views
 from .addresses import AddressTable, DEFAULT_TABLE, TableError
 from .coop import CoopConfig, CoopMod, Split, character_from
 from .hud import HudMode, Screen
@@ -89,6 +89,40 @@ def cmd_doctor(args) -> int:
     else:
         print(f"journal: none at {JOURNAL} (nothing installed yet)")
     return 0
+
+
+def cmd_verify(args) -> int:
+    """Read every measured entry back and check the worksheet against the game.
+
+    Finding the numbers is one job; trusting them is another. A transposed hex digit
+    in a character id or a struct base that is off by one slot would install happily
+    and then write into something else's memory, which is a terrible way to find out.
+    This reads -- and only reads -- so it is safe in a stage, in a menu, with a cave
+    installed or without one.
+    """
+    table = _table(args)
+    pine = _pine(args)
+    try:
+        info = pine.info()
+    except (PineNotRunning, PineError, PineUnusable) as exc:
+        return _fail(f"PINE is not usable: {exc}")
+    # Resolving lets signature-only entries be checked too -- but a half-measured
+    # worksheet is the normal state, and `resolve_all` refuses a table with blanks,
+    # so a failure here just means "check what is pinned".
+    from .addresses import TableError
+
+    resolved_note = ""
+    try:
+        CoopMod(pine, table, CoopConfig()).resolve(_scan_ranges(args))
+    except TableError:
+        resolved_note = "signature scans skipped (the worksheet still has blanks)"
+    except (PineNotRunning, PineError, PineUnusable) as exc:
+        return _fail(f"PINE is not usable: {exc}")
+    print(f"{info.title or table.game} [{info.serial}]" + (f" -- {resolved_note}" if resolved_note else ""))
+    report = verify.check_table(pine, table)
+    print(report.text())
+    return 1 if report.problems else 0
+
 
 
 def cmd_share(args) -> int:
@@ -829,6 +863,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("doctor", help="check PINE and report what the address table still needs")
     p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser(
+        "verify",
+        help="read the measured entries back and check them against the running game",
+    )
+    p.add_argument("--range", action="append", help="START:END in hex, for signature scans; repeatable")
+    p.set_defaults(func=cmd_verify)
 
     p = sub.add_parser("info", help="print the running emulator and disc")
     p.set_defaults(func=cmd_info)
