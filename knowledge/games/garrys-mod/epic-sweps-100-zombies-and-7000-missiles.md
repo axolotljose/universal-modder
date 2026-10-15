@@ -86,9 +86,15 @@ harness that runs both realms and asserts the behaviour, which caught four real 
    128×128 spawnmenu icons from `assets/src/` with Pillow.
 3. Voice: generate the takes as 44.1 kHz mono wav and drop them in `sound/epic_sweps/`; the on-screen
    text is driven by the same `cfg.Voice` table, so a missing or muted wav cannot break the joke.
-4. `node tools/run_smoke_test.js` after every change (needs `npm i fengari`, dev only).
+4. After every change: `node tools/lint_lua.js epic_sweps/lua` (parses), `node tools/lint_symbols.js
+   epic_sweps` (every `EpicSWEPs.<module>.<field>` read is also written), `node tools/run_smoke_test.js`
+   (behaviour; needs `npm i fengari luaparse`, dev only).
 5. `python3 tools/build_materials.py --package` → `dist/epic_sweps.zip` plus each weapon as its own
-   standalone addon (`dist/epic_zombie_spawner.zip`, `dist/epic_7000_missiles.zip`).
+   standalone addon (`dist/epic_zombie_spawner.zip`, `dist/epic_7000_missiles.zip`). Each zip has the
+   addon folder at its root, so unzipping into `garrysmod/addons/` is the whole install; both halves ship
+   the shared modules so the loader's `include` list still resolves.
+   `addon.txt` is GMod's **`"AddonInfo"`** keyvalues (`name`/`author`/`Version`/`tags`) — the
+   `"Addon" { "title" ... }` shape you see in some tutorials is `gmad`'s script file, not this one.
 
 ## Verification
 

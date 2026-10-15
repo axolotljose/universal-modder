@@ -187,14 +187,17 @@ def package(out_dir):
                 shutil.copytree(src, os.path.join(stage, folder), dirs_exist_ok=True)
 
         with open(os.path.join(stage, "addon.txt"), "w") as f:
-            f.write('"Addon"\n{\n\t"title"\t\t"%s"\n\t"version"\t"1.0"\n\t"type"\t\t"tool"\n\t"tags"\t\t"fun"\n}\n' % spec["name"])
+            # this is the schema GMod's addon manager reads; "title"/"type" are gma's, not this file's
+            f.write('"AddonInfo"\n{\n\t"name"\t\t"%s"\n\t"author"\t"universal-modder"\n'
+                    '\t"contact"\t""\n\t"Version"\t"1.0"\n\t"UpstreamPage" ""\n'
+                    '\t"tags"\t\t"fun+other"\n}\n' % spec["name"])
 
         zpath = os.path.join(dist, slug + ".zip")
         with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
             for root, _, files in os.walk(stage):
                 for fn in files:
                     full = os.path.join(root, fn)
-                    z.write(full, os.path.relpath(full, stage))
+                    z.write(full, os.path.join(slug, os.path.relpath(full, stage)))
         print("packed", zpath, "%.0f KB" % (os.path.getsize(zpath) / 1024.0))
 
     # the combined one, as it is developed

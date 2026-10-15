@@ -115,15 +115,24 @@ once as server, once as client — replays the server's net traffic into the cli
 clock through both weapons' full timelines.
 
 ```bash
-npm i fengari                      # dev only, once
-node tools/run_smoke_test.js       # 32 checks: 100 zombies, 7000 fired, damage dealt, streaks drawn
+npm install                        # dev only, once (fengari + luaparse; the addon itself needs nothing)
+npm test                           # 32 checks: 100 zombies, 7000 fired, damage dealt, streaks drawn
+npm run lint                       # parse + symbol resolution
+
+node tools/lint_lua.js epic_sweps/lua     # every file parses as Lua 5.1
+node tools/lint_symbols.js epic_sweps     # every EpicSWEPs.<module>.<fn> a file calls is defined
 ```
+
+`lint_symbols.js` is the one that pays for itself: GMod resolves module fields at call time, so a typo
+(`Missiles.SpawnBarage`) is normally a runtime error for whoever pulls the trigger. It reads the files'
+`local U = EpicSWEPs.Util` aliases, so it checks the calls as they are actually written.
 
 It caught four real bugs while building this: a `net` framing mismatch between the two realms,
 `Entity:EmitSound` argument order (it is `name, level, pitch, volume, channel` — *not* the order most
 tutorials write), `ParticleEffect` having no quantity argument, and an O(n²) missile firing loop.
-`node tools/run_smoke_test.js` also prints any engine method it had to invent — currently none, which
-is how we know there are no typo'd API names.
+`tools/run_smoke_test.js` also prints any engine method it had to invent — currently none, which is how
+we know there are no typo'd API names. Both scripts are plain node; `npm test` and `npm run lint` are the
+same commands.
 
 ## What is and is not verified
 

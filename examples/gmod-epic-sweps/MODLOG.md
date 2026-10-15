@@ -71,6 +71,20 @@ list is empty). 32 checks, 0 failures.
    impacts, plus duplicate damage. Track `self.Sent` and iterate only the new slice; also flush the
    remainder when the firing window closes, or "7000" quietly becomes 6973.
 
+## 2026-10-15 — packaging + linters
+
+`tools/build_materials.py --package` splits the folder into two standalone addons and one combined zip;
+each zip puts `epic_zombie_spawner/` (or `epic_7000_missiles/`) at its root so unzipping into
+`garrysmod/addons/` installs it, and both halves carry the shared modules so no `include` 404s. The
+`addon.txt` in an addon folder is the **AddonInfo** keyvalues schema (`name`, `author`, `Version`,
+`tags`); the `"Addon" { "title" ... }` shape is `gmad`'s script file — easy to mix up.
+
+Two static linters joined the harness (`node tools/lint_lua.js epic_sweps/lua`,
+`node tools/lint_symbols.js epic_sweps`). The symbol one earned its keep immediately, and taught me the
+lesson about heuristics: my first version inferred aliases from any `EpicSWEPs.X = ...` text and happily
+"found" `pos = EpicSWEPs.Zombies` inside `local pos = EpicSWEPs.Zombies.GroundPos(o)` — every regex has
+to be anchored to a whole statement, or the tool cries wolf and gets ignored.
+
 ## Not verified
 
 Never booted in the real game. Open: how loud the attenuated explosions actually are, whether the icons
