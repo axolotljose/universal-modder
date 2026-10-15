@@ -91,6 +91,16 @@ decomp can take billions of tokens.
     found while handing it a value you invented is how a stage crashes -- and make the
     function word the only part of the slot the stub clears, so the host can tell "queued"
     from "done" at a glance.
+  - **The last step of every address hunt is a human judgement, so build the loop that
+    asks.** Snapshot, diff and poke get you a candidate list; deciding which candidate is
+    *the* one is eyes-on-the-screen work that no tool can do. Left alone it becomes twenty
+    commands with the same five arguments, which is how a measurable question turns into an
+    afternoon. Put the loop in the tool and *inject* the judgement
+    (`try_candidates(..., ask=...)` where `ask` is a callback): the CLI supplies one that
+    prompts, tests supply a script, and then everything around the human -- where the run
+    stops, what happens to a candidate that cannot be tried, whether each poke is really
+    undone before the next -- becomes assertable. Print every candidate as it is tried, not
+    just the winner, so a redirected log is the record of what was ruled out.
   - **Gate every optional write on a measured address.** A mod that pokes state the engine
     owns (HUD placement, camera targets, viewport count) should degrade mode by mode -- and
     say which field it is waiting on -- rather than guessing a plausible number. Guessing

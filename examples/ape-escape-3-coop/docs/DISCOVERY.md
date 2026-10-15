@@ -21,7 +21,7 @@ aecoops doctor          # what is missing, and is PINE alive
 aecoops info            # serial, CRC -- write these into data/addresses.json's "eras"
 ```
 
-## The five discovery verbs
+## The six discovery verbs
 
 Everything below is built from these, so they are worth knowing before the first
 recipe uses them:
@@ -33,11 +33,52 @@ recipe uses them:
 | `discover snapshot` / `discover diff` | What differs between two **states** -- a stage and a minigame, an ordinary view and an enlarged MonkeyCam? |
 | `discover watch` | What differs between two **moments**, in a region you already suspect? |
 | `discover poke` | Which word *does* the thing? Writes candidates every frame for a few seconds, then puts everything back. `--call` makes the game *run* a candidate instead (`--call-read` when the function wants the word at an address). |
+| `discover try` | The same question, forty times in a row: walks a diff's candidate list, one poke each, and asks you after every one. This is the last step of most of the recipes below. |
 
-`poke` is the only one that writes. It refuses to run on top of an installed
-cave, restores the instruction it displaced and zeroes the cave it built, even if
-you interrupt it -- so "try a value and look" is a safe loop rather than a way to
-lose a save.
+`poke` and `try` are the only ones that write. Both refuse to run on top of an
+installed cave, restore the instruction they displaced and zero the cave they built,
+even if you interrupt them -- so "try a value and look" is a safe loop rather than a
+way to lose a save.
+
+## The try loop
+
+Every recipe here ends the same way, and it is the one step that cannot be
+automated: write a candidate value, look at the screen, decide. A diff routinely
+hands you twenty candidates, and doing that by hand is twenty shell commands with
+the same five arguments -- which is how a measurable question turns into an
+afternoon.
+
+```bash
+# in a stage, with a story-mode save loaded
+aecoops discover snapshot --out story.json
+# ... now get to the *other* state: e.g. enter a two-player minigame ...
+aecoops discover snapshot --out minigame.json
+
+# walk what changed, writing the minigame's value into the story state, one at a time
+aecoops discover try --from-diff story.json minigame.json --max-value 64 --seconds 3
+```
+
+It prints one candidate at a time, writes it for a few seconds, and then asks:
+
+```
+  trying 0x00110010 = 3
+    178 ticks -- writing 1 entries every frame for 3.0s
+  [4/21] 0x00110010 = 3 -- did that do it? [y]es / [n]o / [q]uit:
+```
+
+Keep your eyes on the screen during those seconds -- the write stops when the
+question appears, so the *during* is the observation. `n` moves on, `y` stops and
+hands you the two commands that record it, `q` stops immediately and leaves nothing
+written. Everything that was tried is printed as it goes, so `> log` gives you a
+list of what was ruled out as well as what worked.
+
+Three things it will not do. It will not decide for you: "did the screen split" is a
+judgement, and a tool that guessed it would be writing your answer into the recipe.
+It will not write the worksheet by itself, because *which field* a value belongs to
+(one view mode? a layout id? a count that now means something else) is the part that
+needs your eyes on the game. And it will not tell you the diff was relevant -- if
+nothing works, the two snapshots were probably not the two states you meant, and
+`--kind settled` is worth trying before you widen the search.
 
 ## Which section a message means
 
@@ -63,6 +104,7 @@ that every key used anywhere in the tool still resolves to a section.
 | `position` | 9 |
 | `tether-radius` | 9 |
 | `calls` | 10 |
+| `try` | The try loop |
 | `recording` | Recording what you find |
 
 ---
@@ -428,7 +470,9 @@ Two widths of 320 in a row and the two views should appear side by side (or not 
 that is the measurement). Escape restores everything; so does the timer.
 
 **If it works**, `aecoops install` picks it up automatically and `status` shows
-`viewports: N writes, rectangles placed`. Both routes run at once, which is
+`viewports: N writes, rectangles placed`. (If you get to the point of testing
+several rectangle words at once, `discover try --candidate 0x...=320` walks a list
+of them the same way `--from-diff` does.) Both routes run at once, which is
 deliberate: the rectangles say *where*, the mode says *how many*, and a renderer
 that respects either one is enough.
 

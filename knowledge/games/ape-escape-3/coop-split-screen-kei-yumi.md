@@ -26,7 +26,7 @@ tags: ["coop", "split-screen", "code-cave", "mips", "pine", "pcsx2", "emulator",
 > re-applies the state the engine keeps overwriting -- and, where state is not
 > enough, **calls the game's own functions** (a write can set `actor_count`, it
 > cannot construct a second actor). The mod's code is finished and
-> tested (268 tests, including the machine code executing in an R5900 interpreter),
+> tested (276 tests, including the machine code executing in an R5900 interpreter),
 > but **nobody has found the addresses on real hardware yet** -- that is the one
 > step left, and `docs/DISCOVERY.md` in the example folder is the procedure.
 >
@@ -172,6 +172,8 @@ python -m aecoops discover snapshot --out minigame.json
 python -m aecoops discover diff stage.json minigame.json --max-value 64
 # and, to test one candidate by eye, the only command here that writes:
 python -m aecoops discover poke --site 0x... --set 0x00110010=1 --duration 3
+# a diff gives you twenty candidates; walk them: one poke each, one question each
+python -m aecoops discover try --from-diff story.json minigame.json --max-value 64
 # a candidate that has to be *run* rather than written -- a constructor, a setter:
 python -m aecoops discover poke --site 0x... --call 0x00123456=1 --duration 4
 
@@ -220,8 +222,14 @@ python -m aecoops export-pnach --out cheats/<CRC>.pnach
    its own frame state every frame**, which is the behaviour the whole mod exists to
    fight. Install → watchdog → two viewports → two heroes → character assignment →
    swap → tether → eject all run against it.
-5. **The discovery method.** The liveness oracle is tested against a simulated
-   console driven at a known frame rate: a per-frame site is accepted, a 20 Hz site
+5. **The discovery method.** The loop that ends every recipe -- poke a candidate,
+   look at the screen, decide -- is tested with the judgement *injected*, so
+   everything around the human is machine-checked: the run stops at the first
+   candidate that works, a survey keeps going and still nominates the first hit, a
+   candidate that cannot be tried costs one candidate rather than the run, and every
+   poke puts the instruction back and zeroes the cave before the next one. The
+   liveness oracle is tested against a simulated console driven at a known frame
+   rate: a per-frame site is accepted, a 20 Hz site
    is rejected with its measured rate, a dead site is reported as never called, and
    a probe always reinstalls what it displaced. The write half (`discover poke`) is
    tested the same way: it lands its writes every frame, restores the instruction
@@ -245,7 +253,7 @@ python -m aecoops export-pnach --out cheats/<CRC>.pnach
 `python -m aecoops selfcheck` runs the same checks on a user's machine in one
 command (114 of them, including that the call region does not overlap the write
 list and that every `docs/DISCOVERY.md#key` a message prints still resolves to a
-section); the suite is 268 tests in about 24 seconds.
+section); the suite is 276 tests in about 30 seconds.
 
 **What was NOT verified.** Everything about the actual game:
 
@@ -409,6 +417,17 @@ machine code, the liveness oracle that turns "is this function called every fram
 into a measurement, and the write half of discovery -- snapshot, diff and poke --
 which turns "which word does this?" into a five-minute experiment instead of an
 afternoon of guessing.
+
+## What is *not* on the internet
+
+Worth recording, because the shortcut looks obvious and is a dead end: the only
+published "codes" for this game are in-game **passwords** (content unlocks, not
+addresses), **encrypted** CodeBreaker/Action Replay payloads (player-visible state
+even when decrypted), and GameShark listings for unlock flags, tied to one pressing
+of one region. None of them is a per-frame `jal`, an actor table, a view mode or a
+struct offset. Those are properties of a running machine, which is why the project
+ships recipes and refuses to guess -- and why the work went into shortening the
+measuring (`discover try`) instead of hunting for a number to copy.
 
 ## Open questions
 

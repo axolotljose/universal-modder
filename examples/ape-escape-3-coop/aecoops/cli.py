@@ -300,6 +300,120 @@ def cmd_discover_poke(args) -> int:
     return 0 if report.ticks else 1
 
 
+def cmd_discover_try(args) -> int:
+    """Walk a candidate list, poking one at a time, asking after each: did it work?
+
+    This is the end of every recipe on this route and the one step that cannot be
+    automated -- write a value, look at the screen, decide. Given a diff of two game
+    states it turns "forty candidates" into a guided run: one, look, answer, next,
+    and it hands back the winner ready to record.
+    """
+    from .discover import Snapshot
+
+    candidates: list[tuple[int, int]] = []
+    if args.from_diff:
+        before = Snapshot.load(args.from_diff[0])
+        after = Snapshot.load(args.from_diff[1])
+        found = before.filtered_diff(
+            after,
+            kind=args.kind,
+            limit=args.limit,
+            max_value=args.max_value,
+            min_value=args.min_value,
+            near=_int_or_none(args.near),
+        )
+        # A diff reports what changed; a poke needs the value to *write*, which is
+        # the "after" side -- the value the game had in the state you want to copy.
+        candidates = [(addr, after_value) for addr, _, after_value in found]
+        print(f"{len(candidates)} candidate(s) from the diff")
+    for pair in args.candidate or []:
+        if "=" not in pair:
+            return _fail(f"{pair!r} is not ADDR=VALUE")
+        addr, value = pair.split("=", 1)
+        candidates.append((int(addr, 0), int(value, 0)))
+    if not candidates:
+        return _fail(
+            "nothing to try: pass --from-diff BEFORE AFTER (from `discover snapshot`) "
+            "or --candidate ADDR=VALUE"
+        )
+
+    cave_addr = _int_or_none(args.cave)
+    with _pine(args) as pine:
+        site = _int_or_none(args.site)
+        if site is None:
+            site = _table(args).globals.get("frame_hook")
+            site = int(site.addr) if site is not None and site.addr is not None else None
+        if site is None:
+            return _fail(
+                "no frame hook to poke through: pass --site, or measure the hook first "
+                "(docs/DISCOVERY.md#frame-hook)"
+            )
+        if cave_addr is None:
+            cave_addr = cave.find_free_region(
+                pine, cave.CAVE_CODE_SIZE + cave.PARAM_BLOCK_SIZE, [EE_RAM, EE_SCRATCHPAD]
+            )
+            print(f"using free RAM at {cave_addr:#010x}")
+        print(
+            f"trying {len(candidates)} candidate(s): {args.seconds:.1f}s each, watch the screen, "
+            "then answer. `q` stops, and nothing is left written."
+        )
+
+        def ask(address: int, value: int, index: int, total: int) -> bool:
+            while True:
+                answer = input(
+                    f"  [{index}/{total}] {address:#010x} = {value} -- did that do it? "
+                    "[y]es / [n]o / [q]uit: "
+                ).strip().lower()
+                if answer in ("y", "yes"):
+                    return True
+                if answer in ("", "n", "no"):
+                    return False
+                if answer in ("q", "quit"):
+                    raise KeyboardInterrupt
+
+        def show(poke, address: int, value: int) -> None:
+            # The candidate is printed here rather than only inside the question, so a
+            # run redirected to a log still records what was tried: the question goes
+            # to the terminal through input(), the evidence goes to stdout.
+            print(f"  trying {address:#010x} = {value}")
+            if poke is None:
+                print("    (not tried: the site or the cave is not available)")
+                return
+            print(f"    {poke.ticks} ticks -- {poke.verdict}")
+
+        try:
+            report = discover.try_candidates(
+                pine,
+                site,
+                cave_addr,
+                candidates,
+                ask=ask,
+                duration=args.seconds,
+                expected_hz=args.hz,
+                stop_at_first=not args.keep_going,
+                on_try=show,
+            )
+        except KeyboardInterrupt:
+            print("\nstopped; the game is exactly as it was found")
+            return 1
+
+    print(f"  {report.describe()}")
+    if report.winner is not None:
+        address, value = report.winner
+        print("  record it (choose the field it belongs to):")
+        print(f"    python -m aecoops set globals.view_mode.addr={address:#010x}")
+        print(f"    python -m aecoops set layouts.<name>={value}")
+    elif report.accepted and args.keep_going:
+        print("  these also did something: " + ", ".join(f"{a:#x}" for a, _ in report.accepted[1:]))
+    else:
+        print(
+            "  none of them: narrow the diff (--kind settled, --max-value), or check that the "
+            "two snapshots were really the two states you meant (docs/DISCOVERY.md#try)"
+        )
+        print("  nothing was left written, and no cave is installed")
+    return 0 if report.winner is not None else 1
+
+
 def cmd_find_free(args) -> int:
     if args.range:
         ranges = [(int(a, 16), int(b, 16)) for a, b in (r.split(":") for r in args.range)]
@@ -711,6 +825,30 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--duration", type=float, default=3.0)
             p.add_argument("--hz", type=float, default=None, help="expected frame rate (default 60)")
         p.set_defaults(func=fn)
+
+    p = disc_sub.add_parser(
+        "try",
+        help="poke candidates one at a time and ask which one worked (the last step of every recipe)",
+    )
+    p.add_argument(
+        "--from-diff",
+        nargs=2,
+        metavar=("BEFORE", "AFTER"),
+        default=None,
+        help="two snapshots; their diff becomes the candidate list",
+    )
+    p.add_argument("--candidate", action="append", metavar="ADDR=VALUE", help="add one by hand; repeatable")
+    p.add_argument("--kind", default="changed", choices=["changed", "written", "settled"])
+    p.add_argument("--limit", type=int, default=24, help="how many diff candidates to walk")
+    p.add_argument("--max-value", type=int, default=None, help="only words this small on both sides")
+    p.add_argument("--min-value", type=int, default=None)
+    p.add_argument("--near", default=None, help="keep candidates within 0x400 of this address")
+    p.add_argument("--seconds", type=float, default=3.0, help="how long each candidate is written")
+    p.add_argument("--site", default=None, help="the per-frame jal to poke through")
+    p.add_argument("--cave", default=None)
+    p.add_argument("--hz", type=float, default=None)
+    p.add_argument("--keep-going", action="store_true", help="keep trying after a yes (survey them all)")
+    p.set_defaults(func=cmd_discover_try)
 
     p = sub.add_parser("find-free", help="locate RAM the game never writes to")
     p.add_argument("--size", type=_number, default=cave.CAVE_CODE_SIZE + cave.PARAM_BLOCK_SIZE)

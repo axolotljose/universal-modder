@@ -21,11 +21,81 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from . import cave, mips
-from .pine import Pine
+from .pine import Pine, PineError
 from .scan import DEFAULT_RANGES, EE_RAM, Match, find_pattern
 
 NTSC_HZ = 60.0
 PAL_HZ = 50.0
+
+
+def try_candidates(
+    pine: Pine,
+    site: int,
+    cave_addr: int,
+    candidates: list[tuple[int, int]],
+    ask,
+    duration: float = 3.0,
+    expected_hz: float | None = None,
+    stop_at_first: bool = True,
+    on_try=None,
+) -> TryReport:
+    """Poke candidates one at a time and ask a human whether each one did it.
+
+    The last step of every recipe on this route is the same, and it is the step that
+    cannot be automated: write a candidate value, look at the screen, decide. Doing
+    it by hand means a shell command per candidate, and a diff of forty candidates
+    is forty commands with the same five arguments -- which is how a measureable
+    question turns into an afternoon.
+
+    So the loop lives here, and the judgement is injected: ``ask(address, value,
+    index, total) -> bool`` is called *after* each poke, and the CLI supplies one
+    that reads the keyboard while a test supplies a script. ``on_try``, if given,
+    gets the :class:`PokeReport` for each candidate -- a caller that wants to print
+    tick rates, or a test that wants to assert every poke was undone.
+
+    Every poke goes through :func:`poke_entries`, so each candidate is tried with
+    the same guarantees: the instruction is restored and the cave zeroed even if the
+    game is interrupted or the write is refused, and the whole run refuses to start
+    on top of an installed cave.
+
+    The return value is the record, not just the answer: which addresses were tried
+    and what was said about each, so that a *no* on every one of them is still
+    information rather than a dead command.
+    """
+    report = TryReport()
+    total = len(candidates)
+    for index, (address, value) in enumerate(candidates, start=1):
+        try:
+            poke = poke_entries(
+                pine,
+                site,
+                cave_addr,
+                [cave.const(address, value)],
+                duration=duration,
+                expected_hz=expected_hz,
+            )
+        except (ValueError, RuntimeError, PineError) as exc:
+            # A candidate that cannot be tried is one candidate, not the end of the
+            # run: the site may not be a jal, or a cave may be installed.
+            report.tried.append((address, value, f"not tried: {exc}"))
+            if on_try:
+                on_try(None, address, value)
+            continue
+        if on_try:
+            on_try(poke, address, value)
+        if not ask(address, value, index, total):
+            report.tried.append((address, value, "no"))
+            continue
+        report.tried.append((address, value, "yes"))
+        if report.winner is None:
+            # First hit wins the title even in a survey: on a survey the useful
+            # answer is still "try this one first", with the rest listed after it.
+            report.winner = (address, value)
+        report.stopped = "accepted"
+        if stop_at_first:
+            return report
+    report.stopped = "exhausted" if report.winner is None else "accepted"
+    return report
 
 
 # --------------------------------------------------------------- frame counters
@@ -328,6 +398,28 @@ def probe_site(
         resident=resident,
         verdict=verdict,
     )
+
+
+@dataclass
+class TryReport:
+    """The outcome of walking a candidate list and asking a human about each one."""
+
+    #: (address, value, what the human said) in the order they were tried.
+    tried: list[tuple[int, int, str]] = field(default_factory=list)
+    winner: tuple[int, int] | None = None
+    stopped: str = ""  # "accepted", "quit", "exhausted", "interrupted"
+
+    @property
+    def accepted(self) -> list[tuple[int, int]]:
+        """Every candidate that was said to work, in the order they were tried."""
+        return [(addr, value) for addr, value, verdict in self.tried if verdict == "yes"]
+
+    def describe(self) -> str:
+        if self.winner is not None:
+            return f"{self.winner[0]:#010x} = {self.winner[1]} (candidate {len(self.tried)})"
+        if self.stopped == "quit":
+            return f"stopped after {len(self.tried)} candidate(s) at your request"
+        return f"{len(self.tried)} candidate(s) tried, none of them did it"
 
 
 @dataclass

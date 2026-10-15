@@ -314,6 +314,64 @@ FUNCTION=ARG` is how you try one out for four seconds and get everything put bac
 A call with an address and no argument is refused outright, loudly and once: jumping
 into code we found while handing it a value we invented is how a stage crashes.
 
+## Fifth pass: `discover try`, and what is *not* on the internet
+
+The obvious shortcut for the missing addresses is somebody else's: this game is
+twenty years old, so surely the numbers are published somewhere. They are not, and
+it is worth writing down what *is* out there, because it is the same trap every
+time:
+
+- **passwords.** The published "codes" for this game are mostly in-game password
+  strings (`blackout`, `coolblue`, `2 snakes`) typed into a secret menu. They are
+  content unlocks, not addresses, and they are not even the same strings in the PAL
+  release.
+- **encrypted cheat-device codes.** The CodeBreaker and Action Replay listings are
+  ciphertext: `D5C91FAD E9000E7D` is a payload with the key on the same page. Even
+  decrypted they name player-visible state -- jackets, gotcha coins, monkey unlocks
+  -- and never the things this mod needs.
+- **GameShark listings** do carry raw addresses, but for unlock flags, and the
+  addresses are tied to one pressing of one region.
+
+So even in the good case -- a GameShark address for this exact disc -- the most you
+could hope for is one of the thirty-two, and none of them is the per-frame `jal`,
+the actor table, the view mode or a struct offset. **Those numbers are properties of
+the running machine, not text that exists anywhere**, which is why the project ships
+recipes and refuses to guess.
+
+What that leaves is the cost of measuring, and the measuring had one genuinely
+tedious step: a diff hands you twenty candidates, and testing them one at a time is
+twenty shell commands with the same five arguments. So `aecoops discover try` does
+the loop and asks the only question that matters, one candidate at a time:
+
+```
+  trying 0x00110010 = 3
+    178 ticks -- writing 1 entries every frame for 3.0s
+  [4/21] 0x00110010 = 3 -- did that do it? [y]es / [n]o / [q]uit:
+```
+
+The judgement is *injected*, not embedded -- `try_candidates(..., ask=...)` takes the
+function that decides -- which is what makes the loop testable: the tests supply a
+scripted answer list and assert that a run stops at the first yes, that a survey
+keeps going, that a candidate which cannot be tried (an installed cave, a site that
+is not a `jal`) costs one candidate rather than the run, and that every single poke
+puts the instruction back and zeroes the cave between candidates. Without that last
+one a "candidate three worked" result could have been candidate two still installed.
+
+Two details that came out of writing it:
+
+- **Every candidate is printed as it is tried, not just the winner.** The question
+  goes to the terminal through `input()`; the evidence goes to stdout. Redirect the
+  run to a file and you get the list of what was ruled out, which is the half of a
+  search that normally evaporates.
+- **A survey still nominates the first hit.** With `--keep-going` several words may
+  each do *something* (a view mode, its mirror, a count), and the useful answer is
+  still "try this one first", with the rest listed after it.
+
+The tool deliberately does not write the worksheet for you. *Which field* a value
+belongs to -- one view mode, a layout id, or a count that means something else now
+-- is the part that needs your eyes on the game, and the run ends by printing the
+two `aecoops set` commands rather than guessing which one you meant.
+
 ## What is not done
 
 **The addresses.** Every field the mod needs is in

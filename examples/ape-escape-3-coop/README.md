@@ -42,7 +42,7 @@ need the game and an emulator; nothing from the disc ships here.
 
 ### Status, honestly
 
-The mod's code is finished and tested -- 268 tests, including the machine code
+The mod's code is finished and tested -- 276 tests, including the machine code
 running in a bundled R5900 interpreter and the whole mod running end to end
 against a simulated console that rewrites its own state every frame, the way the
 real engine does.
@@ -90,6 +90,10 @@ python -m aecoops play --p1 kei --p2 yumi
 # if the split does not appear, measure the viewport rectangles (section 8 of the
 # discovery page) -- the mod drives those too, and `--no-viewports` turns it off
 python -m aecoops discover diff cam_small.json cam_big.json --max-value 700
+
+# and when a diff leaves you twenty candidates, walk them instead of typing twenty
+# commands: one poke each, one question each, nothing left written (`q` stops)
+python -m aecoops discover try --from-diff story.json minigame.json --max-value 64
 
 # and if the renderer rebuilds its views from something else entirely, the route
 # left is to call the game's own setter instead of writing to the word (section 10)
@@ -252,7 +256,7 @@ You cannot run PS2 code in CI, so the project brings its own two oracles:
    mode, per-view HUD, camera targets, calls, eject -- runs against it.
 
 ```bash
-python -m unittest discover -s tests -t .   # 268 tests, ~24 s, no emulator needed
+python -m unittest discover -s tests -t .   # 276 tests, ~30 s, no emulator needed
 python -m aecoops selfcheck                 # 114 checks, one command, no emulator
 ```
 
@@ -301,7 +305,7 @@ aecoops/
 docs/DISCOVERY.md   how to find each address, with the failure table
 MODLOG.md           the journal kept while building this
 patches/            exported `.pnach` files, and what goes in them
-tests/              268 tests: protocol, encodings, cave semantics, HUD, calls, docs
+tests/              276 tests: protocol, encodings, cave semantics, HUD, calls, docs
 ```
 
 ---

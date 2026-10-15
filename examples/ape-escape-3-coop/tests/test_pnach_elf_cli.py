@@ -7,6 +7,7 @@ import io
 import struct
 import tempfile
 import threading
+import unittest.mock
 import time
 import unittest
 from pathlib import Path
@@ -420,6 +421,89 @@ class TestCliAgainstSimulatedConsole(unittest.TestCase):
             self.sim.vm.read_bytes(self.sim.stage.cave, cave.CAVE_CODE_SIZE),
             b"\x00" * cave.CAVE_CODE_SIZE,
         )
+
+    def test_discover_try_walks_a_diff_and_records_the_winner(self) -> None:
+        # The loop that ends every recipe on this route: two snapshots in, a candidate
+        # list out, one poke per candidate, one question per poke. The answers are
+        # scripted here because a human supplies them in real life.
+        from aecoops import discover
+        from aecoops.scan import EE_RAM
+
+        before = discover.Snapshot(ranges=(EE_RAM,), words={0x00110010: 0, 0x00110014: 1, 0x00110020: 9})
+        after = discover.Snapshot(ranges=(EE_RAM,), words={0x00110010: 3, 0x00110014: 2, 0x00110020: 9})
+        left = Path(self.tmp.name) / "before.json"
+        right = Path(self.tmp.name) / "after.json"
+        before.save(left)
+        after.save(right)
+
+        stop = threading.Event()
+
+        def drive() -> None:
+            # At frame rate, so the tick verdicts in the output are the real thing.
+            while not stop.is_set():
+                self.sim.frame(1)
+                time.sleep(1.0 / 60.0)
+
+        driver = threading.Thread(target=drive, daemon=True)
+        driver.start()
+        try:
+            with unittest.mock.patch("builtins.input", side_effect=["n", "y"]):
+                code, output = self.run_cli(
+                    "discover",
+                    "try",
+                    "--from-diff",
+                    str(left),
+                    str(right),
+                    "--cave",
+                    hex(self.sim.stage.cave),
+                    "--site",
+                    hex(self.sim.stage.hook_site),
+                    "--seconds",
+                    "0.15",
+                )
+        finally:
+            stop.set()
+            driver.join(timeout=2.0)
+        self.assertEqual(code, 0, output)
+        self.assertIn("2 candidate(s) from the diff", output)
+        # Each candidate is named as it is tried -- including the one that did not
+        # work, so the log of a run is the record of what was ruled out.
+        self.assertIn("trying 0x00110010 = 3", output)
+        self.assertIn("trying 0x00110014 = 2", output)
+        # The diff's "after" side is what gets written, and the second one won.
+        self.assertIn("0x00110014 = 2 (candidate 2)", output)
+        self.assertIn("set globals.view_mode.addr=0x00110014", output)
+        self.assertFalse(self.sim.cave_installed)
+
+    def test_discover_try_needs_something_to_try(self) -> None:
+        code, output = self.run_cli("discover", "try", "--cave", hex(self.sim.stage.cave))
+        self.assertEqual(code, 2, output)
+        self.assertIn("nothing to try", output)
+
+    def test_discover_try_refuses_without_a_frame_hook(self) -> None:
+        # No hook in the table and no --site means there is nothing to poke through,
+        # and the message says where the hook comes from rather than failing obscurely.
+        table = make_table(self.sim.stage)
+        table.globals["frame_hook"].addr = None
+        path = Path(self.tmp.name) / "nohook.json"
+        table.save(path)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            code = main(
+                [
+                    "--slot",
+                    str(self.sim.port),
+                    "--table",
+                    str(path),
+                    "discover",
+                    "try",
+                    "--candidate",
+                    "0x110020=1",
+                ]
+            )
+        self.assertEqual(code, 2, out.getvalue())
+        self.assertIn("no frame hook", out.getvalue())
+        self.assertIn("DISCOVERY.md#frame-hook", out.getvalue())
 
     def test_status_and_eject(self) -> None:
         self.run_cli(

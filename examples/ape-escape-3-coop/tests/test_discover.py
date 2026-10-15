@@ -441,6 +441,133 @@ class TestPoke(unittest.TestCase):
         self.assertIn("never called", report.verdict)
 
 
+class TestTry(unittest.TestCase):
+    """Walking a candidate list: one poke per candidate, one question per poke.
+
+    The judgement is a human's, so it is injected. What is tested here is everything
+    around it: that the run stops where it should, that each candidate is a complete
+    poke-and-restore of its own, and that a list where nothing works is still a
+    command that ends cleanly rather than a dead end.
+    """
+
+    def setUp(self) -> None:
+        self.sim = FakeAEC3()
+        self.pine = Pine(slot=self.sim.port, timeout=5.0).connect()
+
+    def tearDown(self) -> None:
+        self.pine.close()
+        self.sim.close()
+
+    def _drive_frames(self, hz: float, duration: float) -> threading.Thread:
+        stop = time.monotonic() + duration
+
+        def run() -> None:
+            while time.monotonic() < stop:
+                self.sim.frame(1)
+                time.sleep(1.0 / hz)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        return thread
+
+    def _walk(self, candidates, answers, **kwargs):
+        """Run the loop with a scripted human: ``answers`` is consumed in order."""
+        seen: list[tuple[int, int]] = []
+
+        def ask(address: int, value: int, index: int, total: int) -> bool:
+            seen.append((address, value))
+            self.assertEqual(total, len(candidates))
+            self.assertEqual(index, len(seen))
+            return answers[len(seen) - 1]
+
+        report = discover.try_candidates(
+            self.pine,
+            self.sim.stage.hook_site,
+            self.sim.stage.cave,
+            candidates,
+            ask=ask,
+            duration=0.15,
+            expected_hz=60.0,
+            **kwargs,
+        )
+        return report, seen
+
+    def test_it_stops_at_the_first_candidate_that_works(self) -> None:
+        candidates = [(0x00110020, 1), (0x00110030, 2), (0x00110040, 3)]
+        driver = self._drive_frames(hz=60.0, duration=1.2)
+        report, seen = self._walk(candidates, [False, True, False])
+        driver.join(timeout=3.0)
+        self.assertEqual(report.winner, (0x00110030, 2))
+        self.assertEqual(report.stopped, "accepted")
+        self.assertEqual(seen, candidates[:2])          # the third was never asked about
+        self.assertEqual([t[2] for t in report.tried], ["no", "yes"])
+        self.assertIn("0x00110030", report.describe())
+
+    def test_a_survey_keeps_going_when_told_to(self) -> None:
+        # Several words can each do *something* (a view mode, its mirror, a count).
+        candidates = [(0x00110020, 1), (0x00110030, 2)]
+        driver = self._drive_frames(hz=60.0, duration=1.2)
+        report, seen = self._walk(candidates, [True, True], stop_at_first=False)
+        driver.join(timeout=3.0)
+        self.assertEqual(seen, candidates)
+        self.assertEqual([t[2] for t in report.tried], ["yes", "yes"])
+        self.assertEqual(report.accepted, candidates)
+        # ...and the first hit is still the one to record first.
+        self.assertEqual(report.winner, candidates[0])
+
+    def test_every_candidate_puts_the_game_back(self) -> None:
+        # Each candidate is a complete poke of its own: the instruction is restored
+        # and the cave zeroed between them, so candidate three cannot be explained by
+        # candidate two still being installed.
+        candidates = [(0x00110020, 1), (0x00110030, 2), (0x00110040, 3)]
+        states: list[bool] = []
+
+        def on_try(poke, address: int, value: int) -> None:
+            states.append(self.sim.cave_installed)
+
+        driver = self._drive_frames(hz=60.0, duration=1.5)
+        report, _ = self._walk(candidates, [False, False, False], on_try=on_try)
+        driver.join(timeout=3.0)
+        self.assertEqual(states, [False, False, False])
+        self.assertEqual(report.winner, None)
+        self.assertEqual(report.stopped, "exhausted")
+        self.assertFalse(self.sim.cave_installed)
+        self.assertEqual(
+            self.sim.vm.read_bytes(self.sim.stage.cave, cave.CAVE_CODE_SIZE),
+            b"\x00" * cave.CAVE_CODE_SIZE,
+        )
+        # ...and the site is the game's own jal again, aimed at the function the mod
+        # displaced rather than at the cave.
+        word = self.sim.vm.read32(self.sim.stage.hook_site)
+        self.assertEqual(word >> 26, 0x03)
+        self.assertEqual(cave.callee_of_jal(word, self.sim.stage.hook_site), self.sim.stage.update_fn)
+
+    def test_the_last_value_written_is_left_in_place(self) -> None:
+        # Deliberate: after a "yes" the user goes looking at that address, and a poke
+        # that also un-wrote its own value would leave nothing to look at. The engine
+        # will rewrite it in its own time, which is exactly why a measured address is
+        # worth recording rather than relying on the poke.
+        candidates = [(0x00110020, 0x99)]
+        driver = self._drive_frames(hz=60.0, duration=0.6)
+        self._walk(candidates, [True])
+        driver.join(timeout=3.0)
+        self.assertEqual(self.sim.read(0x00110020), 0x99)
+
+    def test_a_candidate_that_cannot_be_tried_does_not_end_the_run(self) -> None:
+        # `poke_entries` refuses outright when a cave is already installed -- which is
+        # the right refusal, and should cost the run one candidate rather than all of
+        # them (the user may have a session open and not know it).
+        from aecoops.coop import CoopConfig, CoopMod
+
+        from .gamesim import make_table
+
+        CoopMod(self.pine, make_table(self.sim.stage), CoopConfig()).install(cave_addr=self.sim.stage.cave)
+        report, seen = self._walk([(0x00110020, 1)], [False])
+        self.assertEqual(seen, [])
+        self.assertEqual(report.winner, None)
+        self.assertIn("not tried", report.tried[0][2])
+
+
 class TestStageDefaults(unittest.TestCase):
     def test_default_ranges_cover_ee_ram(self) -> None:
         self.assertEqual(discover.EE_RAM, (0x00100000, 0x02000000))
