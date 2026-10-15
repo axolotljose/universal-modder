@@ -267,10 +267,9 @@ Use `--split vertical` (or whichever you verified) and check the picture. If the
 image tears, that is the wrong value: revert with
 `aecoops revert --journal coop-journal.json` and try the neighbouring word.
 
-**If neither value holds**, the renderer is not choosing its cut from one word,
-and the next thing to look at is the *rectangle* each view is drawn into -- the
-MonkeyCam's own position and size, which is the same structure a viewport uses.
-Two words change when you press L2; those are the pair to go after.
+**If neither value holds**, the renderer is not choosing its cut from one word.
+Then go to section 8 and measure the *rectangles* -- the mod drives those directly
+as well, and it is the same structure the MonkeyCam moves when you press L2.
 
 ---
 
@@ -348,6 +347,82 @@ missing owner costs nothing.
 
 ---
 
+## 8. The viewport rectangles (the second lever)
+
+**Why.** Only when section 5 failed: the mod can also place each view by writing
+the rectangle the renderer draws it into -- `x`, `y`, `w`, `h` per view. That does
+not depend on the renderer agreeing to a *mode*, which is what makes it worth
+measuring even though it is more work.
+
+**How.** The MonkeyCam is the anchor. It is a second view of the world drawn into
+a rectangle the game moves at runtime, so its position and size are stored in
+memory rather than baked into a draw call -- which means the structure exists, and
+you can find it:
+
+1. Get a MonkeyCam on screen in a normal stage (Monkey Radar + L2), then stop
+   touching anything: a still camera with a stationary monkey gives you a stable
+   picture.
+2. `aecoops discover snapshot --out cam_small.json`
+3. Press **L2** to enlarge the MonkeyCam. Do not move anything else.
+4. `aecoops discover snapshot --out cam_big.json`
+5. `aecoops discover diff cam_small.json cam_big.json --max-value 700`
+
+You are looking for two integers that changed and are in screen range: one for
+the rectangle's left/top corner or its size, one for the other axis. Four fields
+move together, usually adjacent. Record:
+
+```bash
+aecoops set structs.viewport.fields.x.offset=0x00
+aecoops set structs.viewport.fields.y.offset=0x04
+aecoops set structs.viewport.fields.w.offset=0x08
+aecoops set structs.viewport.fields.h.offset=0x0C
+```
+
+**The stride.** The MonkeyCam's rectangle is one instance; a split needs a second.
+Two possibilities, and the diff tells you which:
+
+- the second rectangle is a *second instance* of the same structure: find the
+  field that differs between two views while both are drawn, and measure the gap;
+- the engine has exactly one rectangle and scales the view into it: then there is
+  no stride to find, and this route cannot split the screen. `--no-viewports`
+  turns it off; `view_mode` is then the only lever.
+
+**The count.** `globals.viewport_count` is how many views the renderer draws. If
+you find it, the mod writes 2; if you do not, the mod writes the rectangles anyway
+and says so, because plenty of renderers derive the count from something else.
+
+**Check it.** This is the one write in the toolkit that can turn the picture into
+garbage, so check it where you can see it:
+
+```bash
+aecoops discover poke --site 0x00123456 --set 0x00183008=320 --set 0x00183028=320 --duration 4
+```
+
+Two widths of 320 in a row and the two views should appear side by side (or not --
+that is the measurement). Escape restores everything; so does the timer.
+
+**If it works**, `aecoops install` picks it up automatically and `status` shows
+`viewports: N writes, rectangles placed`. Both routes run at once, which is
+deliberate: the rectangles say *where*, the mode says *how many*, and a renderer
+that respects either one is enough.
+
+---
+
+## 9. The tether radius (optional)
+
+**Why.** With two viewports of one stage, the heroes can walk into different
+loading zones. `--tether-radius N` keeps player two within N world units of
+player one.
+
+**How.** Nothing to measure: it uses the position fields from section 2 and works
+in world units. Tune it by playing -- `--tether-radius 200` is a starting guess for
+a stage whose areas are tens of metres across. It is applied by the watchdog (four
+times a second), so the correction can be a fraction of a second late; that is why
+it is off by default and why the distance is measured by the host rather than
+inside the cave. `--no-tether` turns the mirroring off as well as the leash.
+
+---
+
 ## Recording what you find
 
 ```bash
@@ -360,6 +435,8 @@ aecoops set structs.hud.fields.x.offset=0x04
 aecoops set structs.hud.fields.y.offset=0x08
 aecoops set structs.camera.stride=0x20
 aecoops set structs.camera.fields.target_actor.offset=0x00
+aecoops set structs.viewport.stride=0x20
+aecoops set globals.viewport_count.addr=0x1a2b3c8
 aecoops set structs.actor.fields.char_id.offset=0x38
 aecoops set globals.frame_hook.addr=0x00123456
 aecoops set globals.frame_hook.verified=2026-10-15
@@ -401,6 +478,8 @@ aecoops export-pnach --hud per-view --out patches/SCUS-97501.pnach
 | `status` prints `the split cannot be applied yet` | `layouts.*` are still `null`. | Section 5. Nothing is written to the game until this is measured. |
 | `--hud per-view` did nothing | `globals.hud_instances` and `structs.hud` are still `null`; install lists them as notes. | Section 7. `shared` is a legitimate answer in the meantime. |
 | Both HUDs are stacked in the same corner | `view_mode` worked (there are two instances) but the anchors are unmeasured, so the game placed both. | Measure `structs.hud.fields.x`/`.y` by poking, section 7. |
+| `viewports: N writes, rectangles placed` but the screen is still one view | The renderer ignores rectangles written by someone else, or `viewport_count` is unmeasured and it never looks at the second one. | Section 8. `--no-viewports` stops the writes if they are not helping. |
+| The picture goes black or garbage when the rectangles are driven | The rectangle units are not pixels, or `w`/`h` landed on a different field than you measured. | `aecoops revert --journal coop-journal.json`, or restart; then re-measure with the MonkeyCam diff. |
 | The HUD is in the right half but half off the screen | The anchor space is not `640x448`. | `--screen pal`, or record the engine's own coordinates instead. |
 | Player two's hero stands still | The pad port or `partner_enabled` is wrong, or `actor_count` is not the field the spawner reads. | Probe the neighbouring words; the tether is on by default and should at least mirror player one. |
 | Both heroes are Kei | `characters.*` are wrong (both reading the same value). | Re-measure against a two-player minigame. |

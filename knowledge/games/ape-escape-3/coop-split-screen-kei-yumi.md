@@ -24,7 +24,7 @@ tags: ["coop", "split-screen", "code-cave", "mips", "pine", "pcsx2", "emulator",
 > Yumi. It is an emulator mod: a ~40 instruction interpreter installed into unused
 > EE RAM, reached by redirecting one `jal` in the game's per-frame path, which
 > re-applies the state the engine keeps overwriting. The mod's code is finished and
-> tested (209 tests, including the machine code executing in an R5900 interpreter),
+> tested (224 tests, including the machine code executing in an R5900 interpreter),
 > but **nobody has found the addresses on real hardware yet** -- that is the one
 > step left, and `docs/DISCOVERY.md` in the example folder is the procedure.
 >
@@ -99,7 +99,10 @@ story mode itself:
   bottom-right of an ordinary stage, **enlarged with L2 and restored with L2**. That
   is the engine rendering a second *view of the world* into a rectangle whose
   position and size it can change at runtime. For a split screen, the rectangle is
-  the whole problem;
+  the whole problem, and it is also the mod's second lever: the split is applied by
+  forcing the view mode *and* by writing each view's rectangle, and a renderer that
+  respects either one is enough. It is also the safest thing to go and measure
+  first, because moving a rectangle is something this engine is *known* to do;
 - the **L2 first-person zoom**, a second camera mode in the story path;
 - and on the HUD side, the minigames *do* have the reference implementation: one
   HUD instance per player, each anchored to its own side, each reading that
@@ -213,7 +216,14 @@ python -m aecoops export-pnach --out cheats/<CRC>.pnach
    tested the same way: it lands its writes every frame, restores the instruction
    and zeroes the cave afterwards -- including when the writes are refused mid-way
    -- and refuses to run over an installed cave.
-6. **The HUD policy.** Two layers. Against a worksheet: an unmeasured disc produces
+6. **The viewport rectangles.** The same two layers as the HUD: an unmeasured
+   viewport table produces no writes and no complaint (the value-based route is
+   still in play), a half-measured one -- three sides of a rectangle -- produces no
+   writes either rather than a rectangle that is moved but not resized, and a
+   measured one produces two halves that tile the frame. Against the simulated
+   console the rectangles hold while the stand-in renderer rebuilds its own every
+   frame, and `--no-viewports` leaves the renderer's own viewports alone.
+7. **The HUD policy.** Two layers. Against a worksheet: an unmeasured disc produces
    *no writes and a reason*; a measured one produces two instances, both visible,
    each anchored inside its own view and owned by its own pad; `hidden` prefers
    switching the instance count off over hiding instances; labels line up with
@@ -222,7 +232,7 @@ python -m aecoops export-pnach --out cheats/<CRC>.pnach
    that matters and the one a policy test cannot make.
 
 `python -m aecoops selfcheck` runs the same checks on a user's machine in one
-command (79 of them); the suite is 209 tests in about 23 seconds.
+command (91 of them); the suite is 224 tests in about 22 seconds.
 
 **What was NOT verified.** Everything about the actual game:
 
@@ -231,7 +241,10 @@ command (79 of them); the suite is 209 tests in about 23 seconds.
   `docs/DISCOVERY.md` gives the recipe for each;
 - whether the story renderer accepts a split view mode at all. It follows from the
   story renderer's own secondary views (the MonkeyCam's rectangle, the L2 zoom)
-  that a second view is possible; it does not follow that one word selects it;
+  that a second view is possible; it does not follow that one word selects it. The
+  rectangle route was built for exactly this, and it is still unverified: whether
+  the engine obeys rectangles written by someone else, and whether the MonkeyCam's
+  rectangle is a slot in a table (two views) or a special case (one);
 - whether the second actor's logic will drive itself once `actor_count` is 2, or
   whether a further flag is needed;
 - whether the story HUD has the fields the per-view policy wants at all: an
@@ -239,7 +252,9 @@ command (79 of them); the suite is 209 tests in about 23 seconds.
   than baked into the draw call. Every one of those writes is gated on a
   measurement, so the honest failure mode is "no second HUD" rather than a
   corrupted one;
-- the tether radius (implemented, untuned).
+- the tether radius: the code is now real (`--tether-radius`, host-measured
+  distance, direction-preserving pull-back) but the *number* is a guess until
+  somebody watches a load-zone boundary.
 
 ## Gotchas
 
@@ -336,7 +351,13 @@ command (79 of them); the suite is 209 tests in about 23 seconds.
     are the same length. (A tool whose job is to be trustworthy has to be tested for
     *reporting* as hard as for behaviour.)
 
-17. **Symptom:** a value poked once from outside appears to work -- the panel moves,
+17. **Symptom:** the split works, then one half stops updating when the other hero
+    walks away. **Cause:** two views of one stage can be in two different loading
+    zones; the second view has nothing to draw. **Fix:** `--tether-radius N` keeps
+    player two within N world units (host-measured, so up to a watchdog period
+    late), or accept it and let the second hero wait at the edge.
+
+18. **Symptom:** a value poked once from outside appears to work -- the panel moves,
     the flag flips -- and then reverts a moment later. **Cause:** the engine rewrites
     its frame state mid-frame, so a one-shot write is indistinguishable from a write
     the engine ignored while you were looking. **Fix:** `discover poke` writes every
@@ -364,10 +385,11 @@ afternoon of guessing.
 1. Does the story stage's view mode *hold* when forced, or does the stage camera
    code reset it mid-frame in a place the hook cannot reach? The fallback is to hook
    the camera code instead of the stage update.
-2. Is the split one value or a pair (viewport count + layout)? If neither holds, the
-   next layer down is the *rectangle* -- the MonkeyCam's position and size, which is
-   the one structure this engine is known to draw a second view into. Two words
-   change when L2 enlarges it; those are the pair to find.
+2. Is the split one value or a pair (viewport count + layout)? It does not have to
+   be answered before trying the other lever: the viewport rectangles are
+   implemented, and `discover diff` across an L2 press is the measurement that
+   finds them. Two words change when the MonkeyCam enlarges; find them, then look
+   for the same fields at a fixed offset for a second view.
 3. Does the second actor need a flag beyond `actor_count` to be simulated? If the
    actor exists but its logic never runs, the tether masks it -- turn the tether off
    to find out.

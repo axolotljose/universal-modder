@@ -269,6 +269,34 @@ class TestHudOnTheConsole(HudCase):
         self.sim.frame(1)
         self.assertEqual(self.sim.hud_instance(1)["x"], 328)
 
+    def test_the_tether_radius_pulls_the_partner_back_to_the_leash(self) -> None:
+        # Two viewports of one stage let the heroes walk into different load zones,
+        # and the leash is the cheap fix: player two is moved back along the line to
+        # player one, keeping the direction they were running in.
+        mod = self.mod(HudMode.SHARED, tether_radius=2.0, tether_until_independent=False)
+        stage = self.sim.stage
+        self.sim.frame(1)
+        mod.tick()  # arms the plan; the engine then rewrites positions below
+        self.sim.move_p1_float(0.0)
+        self.sim.move_p2_float(10.0)
+        mod.tick()  # measures the distance, publishes the correction
+        self.sim.frame(1)  # the game applies it
+        p1 = self.sim.read_float(stage.field(0, stage.off_pos_x))
+        p2 = self.sim.read_float(stage.field(1, stage.off_pos_x))
+        self.assertAlmostEqual(p1, 0.0, places=5)
+        self.assertAlmostEqual(p2, 2.0, places=3)
+        self.assertGreater(p2, p1, "the partner stays on the side it was on")
+
+    def test_a_partner_inside_the_leash_is_left_alone(self) -> None:
+        mod = self.mod(HudMode.SHARED, tether_radius=5.0, tether_until_independent=False)
+        stage = self.sim.stage
+        self.sim.frame(1)
+        mod.tick()
+        self.sim.move_p2_float(1.0)
+        mod.tick()
+        self.sim.frame(1)
+        self.assertAlmostEqual(self.sim.read_float(stage.field(1, stage.off_pos_x)), 1.0, places=5)
+
     def test_ejecting_leaves_no_trace_of_the_hud_writes(self) -> None:
         mod = self.mod(HudMode.PER_VIEW)
         self.sim.frame(2)

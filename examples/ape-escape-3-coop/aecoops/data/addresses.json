@@ -16,19 +16,28 @@
     "ntsc-u": {
       "serial": "SCUS-97501",
       "region": "North America",
-      "names": { "kei": "Kei", "yumi": "Yumi" },
+      "names": {
+        "kei": "Kei",
+        "yumi": "Yumi"
+      },
       "note": "also released on PS4/PS5 as a PS2 classic; the classic is the same image"
     },
     "pal": {
       "serial": null,
       "region": "Europe",
-      "names": { "kei": "Satoru", "yumi": "Sayaka" },
+      "names": {
+        "kei": "Satoru",
+        "yumi": "Sayaka"
+      },
       "note": "add the serial from your own disc: `aecoops doctor` prints it, along with the CRC"
     },
     "ntsc-j": {
       "serial": null,
       "region": "Japan",
-      "names": { "kei": "Satoru", "yumi": "Sayaka" },
+      "names": {
+        "kei": "Satoru",
+        "yumi": "Sayaka"
+      },
       "note": "Saru Get You 3. Add the serial and CRC from your own disc."
     }
   },
@@ -81,6 +90,18 @@
       "signature": null,
       "note": "Optional. How many HUD instances the renderer builds this frame: 1 in a story stage, 2 in a two-player minigame. `aecoops play --hud per-view` writes 2 so each half can have its own; `--hud hidden` writes 0. Unmeasured means the mod leaves the HUD completely alone.",
       "recipe": "docs/DISCOVERY.md#hud"
+    },
+    "viewport_count": {
+      "addr": null,
+      "signature": null,
+      "note": "Optional. How many views of the world the renderer draws this frame: 1 in a story stage (plus the MonkeyCam, which is a separate picture), 2 once the split exists. The rectangle route writes it when it is measured.",
+      "recipe": "docs/DISCOVERY.md#viewports"
+    },
+    "monkeycam": {
+      "addr": null,
+      "signature": null,
+      "note": "The MonkeyCam picture-in-picture: the one place the story renderer is *known* to draw a second view of the world into a rectangle at runtime (L2 enlarges it, L2 restores it). Its address is not needed to run co-op -- it is the reference measurement the viewport recipe starts from.",
+      "recipe": "docs/DISCOVERY.md#viewports"
     }
   },
   "structs": {
@@ -120,8 +141,18 @@
           "note": "World position, in IEEE single-precision. Stored as a float: writes through the cave are raw words, so the mod never has to understand the encoding.",
           "recipe": "docs/DISCOVERY.md#position"
         },
-        "pos_y": { "offset": null, "width": 4, "note": "See pos_x.", "recipe": "docs/DISCOVERY.md#position" },
-        "pos_z": { "offset": null, "width": 4, "note": "See pos_x.", "recipe": "docs/DISCOVERY.md#position" },
+        "pos_y": {
+          "offset": null,
+          "width": 4,
+          "note": "See pos_x.",
+          "recipe": "docs/DISCOVERY.md#position"
+        },
+        "pos_z": {
+          "offset": null,
+          "width": 4,
+          "note": "See pos_x.",
+          "recipe": "docs/DISCOVERY.md#position"
+        },
         "yaw": {
           "offset": null,
           "width": 4,
@@ -153,7 +184,12 @@
           "note": "Where the instance sits, in the game's own HUD coordinates (see `--screen`). In a vertical split the mod puts instance 1 at the left edge of the left view and instance 2 at the left edge of the right view.",
           "recipe": "docs/DISCOVERY.md#hud"
         },
-        "y": { "offset": null, "width": 4, "note": "See x.", "recipe": "docs/DISCOVERY.md#hud" },
+        "y": {
+          "offset": null,
+          "width": 4,
+          "note": "See x.",
+          "recipe": "docs/DISCOVERY.md#hud"
+        },
         "owner": {
           "offset": null,
           "width": 4,
@@ -178,7 +214,55 @@
           "note": "Which actor slot this camera follows.",
           "recipe": "docs/DISCOVERY.md#camera"
         },
-        "distance": { "offset": null, "width": 4, "note": "Follow distance.", "recipe": "docs/DISCOVERY.md#camera" }
+        "distance": {
+          "offset": null,
+          "width": 4,
+          "note": "Follow distance.",
+          "recipe": "docs/DISCOVERY.md#camera"
+        }
+      }
+    },
+    "viewport": {
+      "base": {
+        "addr": null,
+        "signature": null,
+        "note": "Slot 0 of the viewport table: the rectangle the renderer draws view 0 into. The story stage has one; the split needs two. Start from the MonkeyCam's rectangle, which the game itself moves at runtime and therefore stores in memory rather than baking into the draw call.",
+        "recipe": "docs/DISCOVERY.md#viewports"
+      },
+      "stride": null,
+      "_stride_note": "Bytes between two viewport rectangles. If the game only ever has one, this is the size of the structure: find it by looking for the next field after w/h that the renderer sets.",
+      "count": 2,
+      "fields": {
+        "x": {
+          "offset": null,
+          "width": 4,
+          "note": "Rectangle left edge, in the renderer's coordinate space.",
+          "recipe": "docs/DISCOVERY.md#viewports"
+        },
+        "y": {
+          "offset": null,
+          "width": 4,
+          "note": "Rectangle top edge.",
+          "recipe": "docs/DISCOVERY.md#viewports"
+        },
+        "w": {
+          "offset": null,
+          "width": 4,
+          "note": "Rectangle width. In a vertical split this is half the frame.",
+          "recipe": "docs/DISCOVERY.md#viewports"
+        },
+        "h": {
+          "offset": null,
+          "width": 4,
+          "note": "Rectangle height. In a horizontal split this is half the frame.",
+          "recipe": "docs/DISCOVERY.md#viewports"
+        },
+        "target_actor": {
+          "offset": null,
+          "width": 4,
+          "note": "Optional. Which actor slot this view follows: 0 for player one, 1 for player two. Writing it is what stops both halves pointing at the same hero.",
+          "recipe": "docs/DISCOVERY.md#viewports"
+        }
       }
     }
   }

@@ -26,7 +26,7 @@ game and nothing out of this folder:
 |---|---|
 | the hook site | `globals.frame_hook` in your worksheet (or `--site`) |
 | the free RAM for the cave | `find_free_region` + `verify_stable`, or `--cave` |
-| the baked-in entries | the whole list the watchdog would write, in the same order: view mode, actor count, partner flag, the two character ids and pad ports, the tether, the camera targets, and whatever the `--hud` mode resolved to |
+| the baked-in entries | the whole list the watchdog would write, in the same order: view mode, actor count, partner flag, the two character ids and pad ports, the tether, the viewport rectangles and their targets, the camera targets, and whatever the `--hud` mode resolved to |
 
 Then copy it in:
 

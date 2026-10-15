@@ -12,8 +12,11 @@ one screen split down the middle, with pad 1 on one hero and pad 2 on the other:
    +----------------+----------------+
 ```
 
-- **Two viewports.** The stage is drawn twice, once per hero, and each half's
-  camera follows its own player.
+- **Two viewports, two ways.** The split comes from the view mode the renderer
+  reads, and -- where the rectangle a view is drawn into has been measured -- from
+  the rectangles themselves. Either lever is enough; both run at once, because the
+  mode says *how many* and the rectangles say *where*. Each half's camera follows
+  its own player.
 - **Either hero for either player.** `--p1 yumi --p2 kei` works, and always did
   in the engine's head; the mod just tells it so.
 - **Swap mid-stage.** Two writes, on the next frame.
@@ -22,7 +25,9 @@ one screen split down the middle, with pad 1 on one hero and pad 2 on the other:
   owned by that player; `--hud hidden` draws none. Story mode's single HUD is
   placed for a single screen, so a split needs an answer either way.
 - **Tether.** Until the second hero can stand up on its own, it mirrors player
-  one so player two is never pressing buttons at a statue.
+  one so player two is never pressing buttons at a statue; afterwards
+  `--tether-radius N` keeps the two within N world units, so a split cannot walk
+  itself into two different loading zones.
 - **One shared quota.** Either hero's captures count toward the stage total.
 - **Ships as a PCSX2 patch.** Once configured, it exports to a `.pnach`, so co-op
   starts with the game and nothing else has to run.
@@ -32,7 +37,7 @@ need the game and an emulator; nothing from the disc ships here.
 
 ### Status, honestly
 
-The mod's code is finished and tested -- 209 tests, including the machine code
+The mod's code is finished and tested -- 224 tests, including the machine code
 running in a bundled R5900 interpreter and the whole mod running end to end
 against a simulated console that rewrites its own state every frame, the way the
 real engine does.
@@ -76,6 +81,13 @@ python -m aecoops status
 # 4. install and play (add --hud per-view once the HUD is measured)
 python -m aecoops install
 python -m aecoops play --p1 kei --p2 yumi
+
+# if the split does not appear, measure the viewport rectangles (section 8 of the
+# discovery page) -- the mod drives those too, and `--no-viewports` turns it off
+python -m aecoops discover diff cam_small.json cam_big.json --max-value 700
+
+# keep the two heroes from wandering into different load zones
+python -m aecoops play --p1 kei --p2 yumi --tether-radius 200
 ```
 
 Ctrl-C stops the watchdog. `python -m aecoops eject --site 0x... --cave 0x...`
@@ -108,6 +120,7 @@ a specific pressing of the game rather than of the mod. `aecoops doctor` prints
 | `characters.kei`, `characters.yumi` | the two hero ids |
 | `layouts.*` | the view-mode values for one viewport, a vertical split, a horizontal split |
 | `structs.camera.*` | the two stage cameras and which actor each follows |
+| `structs.viewport.*` | the rectangles the two views are drawn into -- the split's second lever, found by watching the MonkeyCam move |
 | `globals.hud_instances`, `structs.hud.*` | how many HUDs the renderer builds, and where each one sits (optional: without them the HUD is left alone) |
 | `actor_count`, `partner_enabled`, `quota_shared` | the flags the stage logic keeps rewriting |
 
@@ -185,6 +198,11 @@ in the same frame, with no host round trip and therefore no lag.
 - **Uninstall is a read.** The cave's last call is the function it displaced, so
   `eject` recovers the original instruction from the cave itself instead of
   trusting a file.
+- **The split has two levers and both refuse to guess.** The view mode is one
+  word; the viewport rectangles are four per view. Either can be unmeasured, and
+  a half-measured rectangle is refused outright rather than written with three
+  sides -- an x/y move with the old w/h draws the old view somewhere strange, which
+  looks like a broken renderer rather than a missing number.
 - **The HUD is never guessed at.** Every HUD write is gated on a measured address,
   and a mode whose addresses are missing degrades to the next one down with a
   reason. `shared` -- write nothing -- is the default, and the only mode that
@@ -208,8 +226,8 @@ You cannot run PS2 code in CI, so the project brings its own two oracles:
    mode, per-view HUD, camera targets, eject -- runs against it.
 
 ```bash
-python -m unittest discover -s tests -t .   # 209 tests, ~23 s, no emulator needed
-python -m aecoops selfcheck                 # 79 checks, one command, no emulator
+python -m unittest discover -s tests -t .   # 224 tests, ~22 s, no emulator needed
+python -m aecoops selfcheck                 # 91 checks, one command, no emulator
 ```
 
 The HUD tests are the ones worth reading: they assert that the mod's writes land
@@ -248,7 +266,8 @@ aecoops/
   addresses.py  the address worksheet (fields, offsets, recipes, verification)
   patcher.py    verified, journalled, reversible memory patches
   hud.py        where the HUD goes on a split screen, and what it refuses to guess
-  coop.py       the mod: install, the watchdog, characters, split, tether, HUD
+  views.py      the rectangles the two views are drawn into -- the split's other lever
+  coop.py       the mod: install, the watchdog, characters, split, tether, HUD, viewports
   pnach.py      export to PCSX2's own patch format
   elf.py        ELF32 symbols / Ghidra function maps, for candidate lists
   cli.py        `aecoops ...`
@@ -256,7 +275,7 @@ aecoops/
 docs/DISCOVERY.md   how to find each address, with the failure table
 MODLOG.md           the journal kept while building this
 patches/            exported `.pnach` files, and what goes in them
-tests/              209 tests: protocol, encodings, cave semantics, HUD, end to end
+tests/              224 tests: protocol, encodings, cave semantics, HUD, end to end
 ```
 
 ---

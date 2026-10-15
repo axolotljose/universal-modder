@@ -15,7 +15,9 @@ Checked here:
 5. the PINE protocol's framing, against a local server that speaks it;
 6. the address worksheet parses and reports itself honestly;
 7. the HUD policy writes nothing on an unmeasured disc, and puts two instances in
-   the two halves on a measured one.
+   the two halves on a measured one;
+8. the viewport rectangles tile the frame, and a half-measured one is refused
+   rather than half-written.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ import struct
 import sys
 from pathlib import Path
 
-from . import cave, hud, mips, pnach
+from . import cave, hud, mips, pnach, views
 from .addresses import AddressTable
 from .r5900vm import R5900VM
 
@@ -276,6 +278,52 @@ def check_table(c: Checker) -> None:
     )
 
 
+def check_views(c: Checker) -> None:
+    """The viewport rectangles: the split's second lever, and its refusals."""
+    c.section("viewport rectangles")
+    from .addresses import Field, Struct
+    from .scan import Discovery
+
+    table = AddressTable.load()
+    plan = views.plan_views(table, "vertical", hud.Screen())
+    c.check("an unmeasured disc writes nothing", plan.entries == [])
+    c.check("...and does not treat a missing backup as a failure", plan.warnings == [])
+    c.check("...but says the split rests on view_mode", any("view_mode" in n for n in plan.notes))
+
+    struct = Struct(
+        name="viewport",
+        base=Discovery(name="viewport.base", addr=0x00183000),
+        stride=0x20,
+        count=2,
+        fields={
+            "x": Field("x", 0x00),
+            "y": Field("y", 0x04),
+            "w": Field("w", 0x08),
+            "h": Field("h", 0x0C),
+            "target_actor": Field("target_actor", 0x10),
+        },
+    )
+    table.structs["viewport"] = struct
+    table.globals["viewport_count"] = Discovery(name="viewport_count", addr=0x00110028)
+    plan = views.plan_views(table, "vertical", hud.Screen(), targets=(0, 1), resolved={"viewport_count": 0x00110028})
+    values = dict(plan.entries)
+    c.check("the split is two halves", (values.get(0x00183000), values.get(0x00183008)) == (0, 320))
+    c.check("the second view is in the right half", values.get(0x00183020) == 320, str(plan.labels))
+    c.check("the halves tile the frame", values.get(0x00183008) + values.get(0x00183028) == 640)
+    c.check("each view follows its own hero", (values.get(0x00183010), values.get(0x00183030)) == (0, 1))
+    c.check("the count is written first", plan.entries[0] == (0x00110028, 2))
+    c.check("labels line up with writes", len(plan.labels) == len(plan.entries))
+
+    struct.fields["w"] = Field("w", None)
+    partial = views.plan_views(table, "vertical", hud.Screen())
+    c.check("a three-sided rectangle is not written at all", partial.entries == [], str(partial.entries))
+    c.check("...and says which field is missing", "w" in " ".join(partial.notes))
+    struct.fields["w"] = Field("w", 0x08)
+    struct.stride = 0
+    single = views.plan_views(table, "vertical", hud.Screen())
+    c.check("one addressable rectangle means no split", single.entries == [] and not single.placed)
+
+
 def check_hud(c: Checker) -> None:
     """The HUD policy: geometry that tiles, and writes that are gated on data.
 
@@ -364,5 +412,6 @@ def run_all(verbose: bool = False) -> int:
     check_protocol(c)
     check_table(c)
     check_hud(c)
+    check_views(c)
     print(f"\n{c.passed} passed, {c.failed} failed")
     return 0 if c.failed == 0 else 1

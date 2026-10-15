@@ -24,7 +24,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import cave, discover, hud, mips, pnach
+from . import cave, discover, hud, mips, pnach, views
 from .addresses import AddressTable, DEFAULT_TABLE, TableError
 from .coop import CoopConfig, CoopMod, Split, character_from
 from .hud import HudMode, Screen
@@ -307,6 +307,7 @@ def _config(args) -> CoopConfig:
         hud_mode=HudMode(getattr(args, "hud", "shared")),
         screen=Screen.parse(getattr(args, "screen", None)),
         cameras_follow_views=not getattr(args, "no_cameras", False),
+        place_viewports=not getattr(args, "no_viewports", False),
         tether_until_independent=not getattr(args, "no_tether", False),
         tether_radius=float(getattr(args, "tether_radius", 0.0)),
     )
@@ -686,6 +687,11 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--screen", default=None, help="the game's HUD space, e.g. 640x448 (pal, 640x512)")
         p.add_argument("--no-cameras", action="store_true", help="do not point each viewport's camera at its own hero")
         p.add_argument(
+            "--no-viewports",
+            action="store_true",
+            help="do not drive the viewport rectangles even if they are measured",
+        )
+        p.add_argument(
             "--scan-range",
             action="append",
             help="START:END in hex to look for signatures in (faster, and some signatures only exist in a stage)",
@@ -725,6 +731,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--hud", default="shared", choices=[m.value for m in HudMode])
     p.add_argument("--screen", default=None)
     p.add_argument("--no-cameras", action="store_true")
+    p.add_argument("--no-viewports", action="store_true")
     p.add_argument("--scan-range", action="append", help="START:END in hex to look for signatures in; repeatable")
     p.set_defaults(func=cmd_export_pnach)
 

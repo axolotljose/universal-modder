@@ -215,6 +215,39 @@ Bugs the tests caught on this pass:
     loop early, which in a filtering helper reads as "found nothing". `limit=0`
     now means every difference.
 
+## Third pass: the split's second lever, and a leash
+
+The open risk from the first pass was that the split rests on one number -- if the
+story renderer ignores `view_mode`, co-op has nothing. It is a real risk, and there
+was already an answer sitting in the recon notes: the renderer draws the MonkeyCam
+into a rectangle it can move at runtime, so it takes rectangles at runtime, and a
+split is two of them. `aecoops/views.py` now drives those directly -- `x`, `y`,
+`w`, `h` per view plus the count and which actor each view follows -- under the same
+rule as the HUD: every write gated on a measurement, nothing half-written, and a
+note rather than a warning when the whole route is unmeasured (because the
+value-based route is still in play and a missing backup is not a fault).
+
+Two details worth keeping:
+
+- **The rectangles tile the frame exactly**, odd sizes included. A one-pixel seam
+  down the middle of the screen is the most visible possible way to be wrong, and
+  it happens for free if you compute the second half as `width / 2` in integers.
+- **All four fields are checked before any is written.** The first version checked
+  "is the field named in the table", which is true for a field whose offset is
+  still `null` -- so a partially measured rectangle got its `x` and `y` written
+  before the write to `w` blew up. A test caught it. The same shape as the HUD's
+  labels bug: the safe version is to decide everything, then write.
+
+Also finished: **the tether radius**, which had been a config option with no
+implementation since the first pass. It is the leash for two viewports of one
+stage -- nothing stops the heroes walking into different loading zones -- and it is
+deliberately coarse: the host measures the distance once per watchdog pass and
+writes constant words, so the correction can be a fraction of a second late. The
+alternative was teaching the in-game interpreter float arithmetic and a square
+root for a feature that only matters when two players deliberately walk apart,
+which is the wrong trade. Direction is preserved (player two is pulled back along
+the line to player one, not teleported on top), and it is off by default.
+
 ## What is not done
 
 **The addresses.** Every field the mod needs is in
@@ -246,6 +279,10 @@ viewports, two heroes and two pads.
    reads or something the stage code builds. `Ultim-ape Fighter!`'s two stamina
    bars are the pair to measure against, now that the split-screen assumption is
    off the table.
-5. The split itself: the view-mode value, or -- if no single value produces two
-   clean viewports -- the MonkeyCam's rectangle, which is the one place the story
-   renderer is known to draw a second view into a box.
+5. The split itself: the view-mode value (§5 of the discovery page), and the
+   viewport rectangles as the fallback (§8) -- implemented and tested, waiting on
+   the same evening of measurement. The rectangles are the safer bet of the two,
+   because they are how the MonkeyCam works and the MonkeyCam demonstrably works.
+6. The tether radius wants a number rather than a guess: `--tether-radius 200` is
+   a placeholder for a playground-sized stage, and the right value is whatever a
+   load-zone boundary turns out to be.

@@ -66,6 +66,16 @@ decomp can take billions of tokens.
     "the engine overwrote it while you were looking", and it is the difference between a
     value that works in a menu and one that works in gameplay. Make the poke refuse to run
     on top of an installed cave and restore in a `finally`.
+  - **A screen split usually has two levers, and the cheaper one is not the flag.**
+    Engines that "can only draw one view" often already draw a second one somewhere:
+    a picture-in-picture camera, a minimap, a scope. That proves the renderer takes
+    a *rectangle* at runtime, which is the same structure a split needs -- so the
+    fallback when a view-mode flag is ignored is to write the rectangles yourself
+    (`x`, `y`, `w`, `h` per view, plus the count). Find them by poking the
+    picture-in-picture's size while it is on screen and watching what moves, and
+    write nothing unless all four fields are measured: an `x`/`y` move with a stale
+    `w`/`h` draws the old view in a new place, which reads as a broken renderer
+    rather than a missing number.
   - **Gate every optional write on a measured address.** A mod that pokes state the engine
     owns (HUD placement, camera targets, viewport count) should degrade mode by mode -- and
     say which field it is waiting on -- rather than guessing a plausible number. Guessing

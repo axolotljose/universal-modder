@@ -36,12 +36,13 @@ someone's own disc, and they never ship.
 
 from __future__ import annotations
 
+import math
 import struct
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from . import cave, hud
+from . import cave, hud, views
 from .hud import HudMode, Screen
 from .addresses import AddressTable, TableError
 from .patcher import PatchSet
@@ -83,6 +84,9 @@ class CoopConfig:
     # Give each viewport's camera its own hero. Only ever written when the camera
     # structure has been measured.
     cameras_follow_views: bool = True
+    # Drive the viewport rectangles directly when they have been measured: the
+    # fallback for a renderer that ignores view_mode. See views.py.
+    place_viewports: bool = True
     # The stage quota is shared by default: two heroes, one monkey count, so the
     # stage still ends where it always did. Set False for "either player can
     # clear the stage alone".
@@ -244,6 +248,7 @@ class CoopMod:
         self._tick_stall = 0
         self._independent_at: float | None = None
         self._hud_plan = hud.HudPlan(mode=self.config.hud_mode)
+        self._view_plan = views.ViewPlan()
         self._notes_seen: dict[str, str] = {}
         # Where signatures are looked for. None means "everywhere the worksheet's
         # defaults cover"; a stage-only signature is much faster to find inside one.
@@ -337,6 +342,9 @@ class CoopMod:
             report.cave, report.site, report.callee = cave_addr, site, self._interpreter.callee
             report.notes.append("cave was already installed; left as it is")
             report.notes.append(f"hud: {self._hud_plan.describe()}")
+            report.notes.append(self._view_plan.describe())
+            report.notes.extend(f"  {n}" for n in self._view_plan.notes)
+            report.notes.extend(f"! {w}" for w in self._view_plan.warnings)
             return report
 
         # Order matters: the cave and its block exist before anything jumps to it.
@@ -355,7 +363,11 @@ class CoopMod:
         report.callee = self._interpreter.callee
         report.notes.append(f"{len(plan.entries)} writes armed")
         report.notes.append(f"hud: {self._hud_plan.describe()}")
+        report.notes.append(self._view_plan.describe())
+        report.notes.extend(f"  {n}" for n in self._view_plan.notes)
         for warning in self._hud_plan.warnings:
+            report.notes.append(f"! {warning}")
+        for warning in self._view_plan.warnings:
             report.notes.append(f"! {warning}")
         return report
 
@@ -459,18 +471,40 @@ class CoopMod:
             except TableError as exc:
                 out.warnings.append(f"per-player character ids skipped: {exc}")
 
-        # 4. the tether: mirror the partner onto player one until it can stand up
+        # 4. hero two: mirrored onto player one until its own logic drives it, and
+        #    then (optionally) kept within a radius so two viewports cannot wander
+        #    into different load zones.
         if cfg.tether_until_independent and not self.independent:
             out.entries.extend(self._tether_entries())
+        else:
+            out.entries.extend(self._radius_entries())
 
         if cfg.share_quota:
             set_global("quota_shared", 1, "quota shared")
 
-        # 5. who each half of the screen is looking at
+        # 5. the rectangles themselves, if they have been measured: the split can
+        #    come from a value or from four numbers per view, and the second one
+        #    does not depend on the renderer agreeing to a mode.
+        if cfg.place_viewports and cfg.split is not Split.SINGLE:
+            view_plan = views.plan_views(
+                table,
+                cfg.split.value,
+                cfg.screen,
+                targets=self._view_targets(),
+                resolved=self._resolved,
+            )
+            self._view_plan = view_plan
+            out.entries.extend(
+                Entry(addr, value, label, essential=False)
+                for (addr, value), label in zip(view_plan.entries, view_plan.labels)
+            )
+            out.warnings.extend(view_plan.warnings)
+
+        # 6. who each half of the screen is looking at
         if cfg.cameras_follow_views and cfg.split is not Split.SINGLE:
             out.entries.extend(self._camera_entries())
 
-        # 6. the HUD, for a screen that is now two screens
+        # 7. the HUD, for a screen that is now two screens
         hud_plan = hud.plan_hud(table, cfg.hud_mode, cfg.split.value, cfg.screen, resolved=self._resolved)
         out.entries.extend(
             Entry(addr, value, label, essential=False)
@@ -495,6 +529,11 @@ class CoopMod:
         """
         return self.plan().values()
 
+    def _view_targets(self) -> tuple[int, int]:
+        """Which actor slot each view follows: view 1 shows `camera_follows`' hero."""
+        primary = 0 if self.config.camera_follows == self.config.p1 else 1
+        return (primary, 1 - primary)
+
     def _camera_entries(self) -> list[Entry]:
         """Point each viewport's camera at its own hero.
 
@@ -514,14 +553,77 @@ class CoopMod:
             )
             return []
         try:
-            primary = 0 if self.config.camera_follows == self.config.p1 else 1
             out = []
-            for view, hero in ((0, primary), (1, 1 - primary)):
+            for view, hero in enumerate(self._view_targets()):
                 addr = camera.address_of(camera.base.addr, view, "target_actor")
                 out.append(Entry(addr, hero, f"view{view + 1}->hero{hero + 1}", essential=False))
             return out
         except TableError:
             return []
+
+    def _radius_entries(self) -> list[Entry]:
+        """Pull player two back inside ``tether_radius`` of player one.
+
+        This is the leash for two viewports of one stage: nothing stops the heroes
+        walking into different load zones, and the cheap fix is a distance clamp.
+
+        It is deliberately coarse. The distance is measured by the *host* (a PINE
+        read, once per watchdog pass) and the correction is written as constant
+        words, so it can be up to one watchdog period late -- which is why the
+        default radius is off and why this is optional rather than essential. The
+        alternative -- asking the cave to do float arithmetic and square roots on
+        every frame -- would mean a different interpreter for one feature that only
+        matters when the two players deliberately walk apart.
+
+        Direction is preserved: the partner is moved back along the line to player
+        one rather than teleported on top of them, so a player who is running away
+        is stopped instead of disoriented.
+        """
+        radius = float(self.config.tether_radius or 0.0)
+        if radius <= 0:
+            return []
+        actor = self.table.structs.get("actor")
+        if actor is None or actor.base.addr is None or not actor.stride:
+            return []
+        try:
+            offsets = [actor.field_offset(name) for name in ("pos_x", "pos_y", "pos_z")]
+        except TableError:
+            self._note_once(
+                "tether_radius:fields",
+                "tether_radius is set but the actor's position fields are not all measured, so "
+                "the leash cannot be applied (docs/DISCOVERY.md#position)",
+            )
+            return []
+        base = actor.base.addr
+        first = [self._read_float(base + Slot.P1.value * actor.stride + off) for off in offsets]
+        second = [self._read_float(base + Slot.P2.value * actor.stride + off) for off in offsets]
+        if any(value is None for value in first + second):
+            return []
+        distance = math.sqrt(sum((b - a) ** 2 for a, b in zip(first, second)))
+        if not math.isfinite(distance) or distance <= radius:
+            return []
+        scale = radius / distance
+        out: list[Entry] = []
+        for name, off, a, b in zip(("pos_x", "pos_y", "pos_z"), offsets, first, second):
+            clamped = a + (b - a) * scale
+            addr = base + Slot.P2.value * actor.stride + off
+            out.append(
+                Entry(addr, self._float_word(clamped), f"hero2.{name}=leash", essential=False)
+            )
+        return out
+
+    @staticmethod
+    def _float_word(value: float) -> int:
+        return struct.unpack("<I", struct.pack("<f", value))[0]
+
+    def _read_float(self, addr: int) -> float | None:
+        """Read a word and interpret it as the IEEE single the engine stores there."""
+        try:
+            word = self.pine.read32(addr)
+        except PineError:
+            return None
+        value = struct.unpack("<f", struct.pack("<I", word))[0]
+        return value if math.isfinite(value) else None
 
     def _note_once(self, key: str, message: str) -> None:
         """Remember a missing measurement; it is reported once, on the next pass.
@@ -709,6 +811,13 @@ class CoopMod:
             "p2": self.config.p2,
             "split": self.config.split.value,
             "hud": hud.describe_for(self.table, self.config.hud_mode),
+            "views": views.plan_views(
+                self.table,
+                self.config.split.value,
+                self.config.screen,
+                targets=self._view_targets(),
+                resolved=self._resolved,
+            ).describe(),
             "writes": len(plan.entries),
             "independent": self.independent,
             "tick": self._last_tick,

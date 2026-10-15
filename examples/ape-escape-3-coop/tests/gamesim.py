@@ -63,6 +63,15 @@ class Stage:
     camera_base: int = 0x00182000
     camera_stride: int = 0x20
     off_camera_target: int = 0x00
+    # the viewport rectangles the renderer draws into
+    viewport_count: int = 0x00110028
+    viewport_base: int = 0x00183000
+    viewport_stride: int = 0x20
+    off_view_x: int = 0x00
+    off_view_y: int = 0x04
+    off_view_w: int = 0x08
+    off_view_h: int = 0x0C
+    off_view_target: int = 0x10
 
     # Values the engine itself believes, i.e. what it writes back every frame.
     engine_view_mode: int = 0  # single viewport, story mode
@@ -73,6 +82,11 @@ class Stage:
     # where the engine puts the story HUD, and where it puts a second one when it
     # believes there is one: bottom-right, which is why a split needs it moved.
     engine_hud: tuple = (560, 8)
+    # One full-screen view, and the story renderer's own idea of where a second
+    # view goes when it draws one (the MonkeyCam's corner, made up).
+    engine_viewports: int = 1
+    engine_view: tuple = (0, 0, 640, 448)
+    engine_view2: tuple = (448, 336, 192, 112)
 
     def field(self, slot: int, offset: int) -> int:
         return self.actor_base + slot * self.actor_stride + offset
@@ -82,6 +96,9 @@ class Stage:
 
     def camera(self, slot: int, offset: int) -> int:
         return self.camera_base + slot * self.camera_stride + offset
+
+    def viewport(self, slot: int, offset: int) -> int:
+        return self.viewport_base + slot * self.viewport_stride + offset
 
 
 class FakeAEC3:
@@ -149,6 +166,11 @@ class FakeAEC3:
             self.vm.write32(s.hud(slot, s.off_hud_owner), 0)
         for slot in range(2):
             self.vm.write32(s.camera(slot, s.off_camera_target), 0)
+        self.vm.write32(s.viewport_count, s.engine_viewports)
+        for slot, rect in enumerate((s.engine_view, s.engine_view2)):
+            for offset, value in zip((s.off_view_x, s.off_view_y, s.off_view_w, s.off_view_h), rect):
+                self.vm.write32(s.viewport(slot, offset), value)
+            self.vm.write32(s.viewport(slot, s.off_view_target), 0)
 
     # -------------------------------------------------------------------- frames
 
@@ -174,6 +196,13 @@ class FakeAEC3:
                 self.vm.write32(s.hud(slot, s.off_hud_y), s.engine_hud[1])
                 self.vm.write32(s.hud(slot, s.off_hud_owner), 0)
                 self.vm.write32(s.camera(slot, s.off_camera_target), 0)
+            # The renderer rebuilds its rectangles from the view mode every frame,
+            # which is the whole reason the rectangle route is also a per-frame wrestle.
+            self.vm.write32(s.viewport_count, s.engine_viewports)
+            for slot, rect in enumerate((s.engine_view, s.engine_view2)):
+                for offset, value in zip((s.off_view_x, s.off_view_y, s.off_view_w, s.off_view_h), rect):
+                    self.vm.write32(s.viewport(slot, offset), value)
+                self.vm.write32(s.viewport(slot, s.off_view_target), 0)
             self._call_hook()
 
     def _call_hook(self) -> None:
@@ -193,6 +222,12 @@ class FakeAEC3:
 
     def read(self, addr: int) -> int:
         return self.vm.read32(addr)
+
+    def read_float(self, addr: int) -> float:
+        return struct.unpack("<f", struct.pack("<I", self.read(addr)))[0]
+
+    def write_float(self, addr: int, value: float) -> None:
+        self.vm.write32(addr, struct.unpack("<I", struct.pack("<f", value))[0])
 
     def actor(self, slot: int) -> dict:
         s = self.stage
@@ -215,14 +250,33 @@ class FakeAEC3:
             "owner": self.read(s.hud(slot, s.off_hud_owner)),
         }
 
+    def view_rect(self, slot: int) -> tuple:
+        s = self.stage
+        return tuple(
+            self.read(s.viewport(slot, offset))
+            for offset in (s.off_view_x, s.off_view_y, s.off_view_w, s.off_view_h)
+        )
+
     def set_engine_char(self, char_id: int) -> None:
         """Pretend the save slot was loaded with a different hero."""
         self.stage.engine_char_id = char_id
         for slot in range(2):
             self.vm.write32(self.stage.field(slot, self.stage.off_char_id), char_id)
 
-    def move_p1(self, x: int) -> None:
-        self.vm.write32(self.stage.field(0, self.stage.off_pos_x), x)
+    def move_p1(self, word: int) -> None:
+        """Put player one at ``x``, as a raw word.
+
+        Raw, not a float, because most tests care that a value *moved between two
+        actors* rather than what it means as a number -- and a raw word makes the
+        expectation exact. Use ``move_p1_float`` where the arithmetic matters.
+        """
+        self.vm.write32(self.stage.field(0, self.stage.off_pos_x), word)
+
+    def move_p1_float(self, x: float) -> None:
+        self.write_float(self.stage.field(0, self.stage.off_pos_x), x)
+
+    def move_p2_float(self, x: float) -> None:
+        self.write_float(self.stage.field(1, self.stage.off_pos_x), x)
 
     @property
     def cave_installed(self) -> bool:
@@ -257,7 +311,15 @@ class FakeRig:
         self.sim.close()
 
 
-def make_table(stage: Stage, kei: int = 0, yumi: int = 1, tmp=None, with_hud: bool = False, with_cameras: bool = False):
+def make_table(
+    stage: Stage,
+    kei: int = 0,
+    yumi: int = 1,
+    tmp=None,
+    with_hud: bool = False,
+    with_cameras: bool = False,
+    with_viewports: bool = False,
+):
     """An AddressTable aimed at a simulated stage (used by the co-op tests).
 
     ``tmp`` is an optional pytest tmp_path: when given, the table is written to
@@ -307,6 +369,21 @@ def make_table(stage: Stage, kei: int = 0, yumi: int = 1, tmp=None, with_hud: bo
             },
         )
         globals_["hud_instances"] = disc(stage.hud_instances)
+    if with_viewports:
+        structs["viewport"] = Struct(
+            name="viewport",
+            base=disc(stage.viewport_base),
+            stride=stage.viewport_stride,
+            count=2,
+            fields={
+                "x": Field("x", stage.off_view_x, verified="simulated"),
+                "y": Field("y", stage.off_view_y, verified="simulated"),
+                "w": Field("w", stage.off_view_w, verified="simulated"),
+                "h": Field("h", stage.off_view_h, verified="simulated"),
+                "target_actor": Field("target_actor", stage.off_view_target, verified="simulated"),
+            },
+        )
+        globals_["viewport_count"] = disc(stage.viewport_count)
     if with_cameras:
         structs["camera"] = Struct(
             name="camera",
