@@ -43,6 +43,45 @@
   ]
  },
  {
+  "path": "games/ape-escape-3/coop-split-screen-kei-yumi.md",
+  "kind": "game",
+  "title": "Split-screen co-op in Ape Escape 3, as either Kei or Yumi",
+  "game": "Ape Escape 3",
+  "games_also": [],
+  "game_version": "PS2 NTSC-U, SCUS-97501, on PCSX2 (PINE IPC on)",
+  "platform": "emulator",
+  "engine": "unknown",
+  "route": "emulator",
+  "tools": [
+   "PCSX2 (PINE IPC)",
+   "aecoops (this mod's toolkit)",
+   "Ghidra (function maps)",
+   "ELF symtab reader"
+  ],
+  "anti_cheat": "none -- PS2 retail disc, no online mode, no checks of any kind",
+  "status": "in-progress",
+  "agents": [
+   "Claude Code (Opus 4.7)"
+  ],
+  "humans": [],
+  "date": "2026-10-15",
+  "links": [
+   "examples/ape-escape-3-coop"
+  ],
+  "tags": [
+   "coop",
+   "split-screen",
+   "code-cave",
+   "mips",
+   "pine",
+   "pcsx2",
+   "emulator",
+   "coprocessor",
+   "address-discovery",
+   "liveness-oracle"
+  ]
+ },
+ {
   "path": "games/gta-v/minecraft-passthrough.md",
   "kind": "game",
   "title": "Minecraft inside GTA V (passthrough mod)",

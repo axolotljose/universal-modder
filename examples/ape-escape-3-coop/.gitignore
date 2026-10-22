@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# What the mod writes while it runs. The journal holds addresses and the bytes that
+# were there before -- your own measurements, never game data -- but it is scratch,
+# not part of the mod.
+coop-journal.json
+
+# A worksheet filled in for one disc is a local measurement, not something to share:
+# the shipped one is a template with NOT FOUND YET in it. Copy your own aside to keep
+# it, or deliberately commit an edited template.
+addresses.local.json
+
+# Exported patches are named after your disc's CRC. Keep the one you tuned if you
+# like; the placeholder pattern keeps a build directory out of the tree.
+/build/

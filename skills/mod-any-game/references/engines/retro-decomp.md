@@ -49,6 +49,93 @@ decomp can take billions of tokens.
 ## Emulator-based mods (no source needed)
 - **Memory scripting:** BizHawk Lua, mGBA Lua/scripting, Dolphin Memory Engine, PCSX2 PINE, RetroArch
   cheats. Find addresses with RAM search. mgba-mcp / PCSX2-MCP expose this to agents.
+  - **PCSX2/PINE specifics** (learned building the Ape Escape 3 co-op mod, field note in
+    `knowledge/games/ape-escape-3/`): a request is `u32 length` + commands and a reply is `u32 size`,
+    `u8 result`, payload; thousands of commands batch into one round trip, capped at 650000 bytes of
+    request and 450000 of reply; one client at a time (a second one is accepted and never read, so it
+    times out); after a `0xFF` the server resets, so reconnect rather than resync. A host-side writer
+    loses every race against the engine's own per-frame state -- put the effect *inside* the game
+    (a code cave reached by redirecting one `jal` in a per-frame path) and keep the policy outside.
+  - **The write half of discovery.** Reading memory finds what a value *is*; only writing
+    finds what it *does*. Two tools carry most of the weight: (1) snapshot a region to a file,
+    change the game state, snapshot again, and diff narrowed to "words that differ and are
+    small integers" -- the two states worth comparing (a level versus a menu, one view versus
+    two) are usually minutes and a transition apart, so they cannot be diffed from one
+    process; (2) a "poke" that writes candidate values *every frame* for a few seconds and
+    then restores everything. A one-shot write cannot distinguish "the engine responded" from
+    "the engine overwrote it while you were looking", and it is the difference between a
+    value that works in a menu and one that works in gameplay. Make the poke refuse to run
+    on top of an installed cave and restore in a `finally`.
+  - **A screen split usually has two levers, and the cheaper one is not the flag.**
+    Engines that "can only draw one view" often already draw a second one somewhere:
+    a picture-in-picture camera, a minimap, a scope. That proves the renderer takes
+    a *rectangle* at runtime, which is the same structure a split needs -- so the
+    fallback when a view-mode flag is ignored is to write the rectangles yourself
+    (`x`, `y`, `w`, `h` per view, plus the count). Find them by poking the
+    picture-in-picture's size while it is on screen and watching what moves, and
+    write nothing unless all four fields are measured: an `x`/`y` move with a stale
+    `w`/`h` draws the old view in a new place, which reads as a broken renderer
+    rather than a missing number.
+  - **A write sets state; only the game's own code constructs anything.** There is a
+    ceiling to memory-poking that shows up at the same place in every project: you can
+    force `actor_count` to two, but if the engine never built a second actor structure,
+    there is no second actor -- and re-writing a "view mode" word does nothing if the
+    renderer recomputes its layout from something else. Both are *doings*, and the fix is
+    to call the function the game calls: queue the address plus one argument for a small
+    in-game stub to `jal`, with the argument already in `$a0`. Three rules make that safe.
+    Take a call **once**, not every frame -- a call is the opposite of a write, and
+    "spawn the partner" run sixty times a second is sixty partners: have the stub consume
+    the slot (zero the function word) and have the host re-send only the calls it has read
+    back as *not yet* consumed, which is also the only honest evidence that a call
+    happened. Refuse a call whose argument has not been measured -- jumping into code you
+    found while handing it a value you invented is how a stage crashes -- and make the
+    function word the only part of the slot the stub clears, so the host can tell "queued"
+    from "done" at a glance.
+  - **The last step of every address hunt is a human judgement, so build the loop that
+    asks.** Snapshot, diff and poke get you a candidate list; deciding which candidate is
+    *the* one is eyes-on-the-screen work that no tool can do. Left alone it becomes twenty
+    commands with the same five arguments, which is how a measurable question turns into an
+    afternoon. Put the loop in the tool and *inject* the judgement
+    (`try_candidates(..., ask=...)` where `ask` is a callback): the CLI supplies one that
+    prompts, tests supply a script, and then everything around the human -- where the run
+    stops, what happens to a candidate that cannot be tried, whether each poke is really
+    undone before the next -- becomes assertable. Print every candidate as it is tried, not
+    just the winner, so a redirected log is the record of what was ruled out.
+  - **Check the measurements against each other before installing them.** Finding an
+    address and trusting it are different jobs, and the gap between them is where the
+    worst failure lives: a transposed hex digit, a struct base on the neighbouring slot,
+    an offset that is really the next field. None of those stops an install -- they write
+    a plausible value into whatever lives there, and the symptom shows up minutes later
+    as a stage doing something strange. Before writing anything, read every measured
+    entry back and cross-check: the hook site holds the instruction you think it does;
+    the struct's first slot says one of the ids you measured *independently* (two
+    measurements that must agree is the strongest check available, and a field with two
+    legal values -- a pad port, a flag -- catches a misplaced base even when other words
+    look plausible); a function address is aligned and not all zeros; two values you
+    expect to differ are not equal. Fail with a non-zero exit status on the real
+    problems and print the rest as questions, and write a test for every way of being
+    wrong, because a checker that cannot fail is decoration.
+  - **The person measuring is often not at the machine measuring.** Anything that needs
+    a running emulator to measure also needs the measurement to travel: to a chat, to a
+    phone, to whoever is helping. Build the hand-off and make it *structural* -- a
+    command whose whole stdout is one small ASCII payload, built only from your
+    worksheet and the emulator's metadata (serial, title, CRC, run state), so there is
+    no code path that could put a game file, a savestate or a decompiled listing into
+    it. Summarise anything sensitive as a count (a patch journal becomes "3 writes at
+    <addr>", never its bytes), wrap lines to phone width, keep it under a few
+    kilobytes, and provide the reverse direction too (`set --file` to apply a batch of
+    measurements in one command). One more hard limit worth stating up front: IPC APIs
+    like PCSX2's PINE bind to localhost only and have no Android equivalent, so a
+    phone-only setup cannot be hooked -- the game must run on a desktop emulator.
+  - **Gate every optional write on a measured address.** A mod that pokes state the engine
+    owns (HUD placement, camera targets, viewport count) should degrade mode by mode -- and
+    say which field it is waiting on -- rather than guessing a plausible number. Guessing
+    turns "the mod did nothing" into "the mod moved something nobody was looking at and the
+    save no longer loads". The same rule applies to *evidence*: before copying what a
+    minigame does, check that it does it (one project spent a design on "the minigame renderer
+    already draws two views" before finding that the game's two-player minigames are all
+    shared-screen, and that the second view it needed was the story mode's own
+    picture-in-picture camera).
 - **ROM hacks:**
   - patch code or data in the ROM and distribute an IPS/BPS/xdelta patch, never the ROM;
   - existing editors: Lunar Magic (SMW), Wiimm's SZS tools (Mario Kart Wii tracks), Pokémon hacking tools.
