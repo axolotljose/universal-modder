@@ -1,0 +1,15 @@
+# Engine checkout fetched by setup.sh (includes its own submodules)
+Shipwright-Android/
+
+# Gradle / Android build outputs
+android/build/
+android/app/build/
+android/.gradle/
+android/app/.cxx/
+android/local.properties
+*.apk
+
+# Editor / OS noise
+.idea/
+*.iml
+.DS_Store
