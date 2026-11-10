@@ -49,8 +49,28 @@ jobs:
 
       - name: Install Android SDK packages
         run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platform-tools" "platforms;android-31" "ndk;26.0.10792818"
+          # Diagnostics are emitted as annotations (::error::) because raw job
+          # logs live on a host this dev sandbox cannot reach.
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ] && [ -n "$ANDROID_HOME" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -n1)"
+          fi
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager not found (PATH='$PATH' ANDROID_HOME='$ANDROID_HOME')"
+            exit 1
+          fi
+          echo "using sdkmanager: $SDKMANAGER"
+          "$SDKMANAGER" --version 2>&1 | head -n 3 || true
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          for pkg in "platform-tools" "platforms;android-31" "ndk;26.0.10792818"; do
+            echo "installing $pkg ..."
+            if ! OUT=$("$SDKMANAGER" "$pkg" 2>&1); then
+              echo "$OUT" | tail -n 30
+              echo "::error::sdkmanager failed for [$pkg]: $(echo "$OUT" | tail -n 8 | tr '\n' ' | ')"
+              exit 1
+            fi
+          done
+          "$SDKMANAGER" --list_installed 2>&1 | head -n 40 || true
 
       - name: Fetch engine + rebrand JNI (setup.sh)
         working-directory: examples/ocarinaaa-android
@@ -58,7 +78,13 @@ jobs:
 
       - name: Build APK (assembleRelease)
         working-directory: examples/ocarinaaa-android/android
-        run: ./gradlew assembleRelease --no-daemon --stacktrace
+        run: |
+          if ! OUT=$(./gradlew assembleRelease --no-daemon --stacktrace 2>&1); then
+            echo "$OUT" | tail -n 80
+            echo "::error::gradle failed: $(echo "$OUT" | grep -E 'FAILURE:|What went wrong|error:|Execution failed|Could not' | head -n 20 | tr '\n' ' | ')"
+            exit 1
+          fi
+          echo "$OUT" | tail -n 15
 
       - name: Show APK
         run: ls -la examples/ocarinaaa-android/android/app/build/outputs/apk/release/
