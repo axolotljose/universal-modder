@@ -1,0 +1,96 @@
+name: build-android-apk
+
+# Builds the OcarinAAA of Time Android port (examples/ocarinaaa-android).
+# The sandbox where this port is developed cannot reach Google's SDK hosts,
+# so the APK is built here and published two ways:
+#   - as a workflow artifact (download from the run page)
+#   - force-pushed to the `apk-build` branch (one APK, always latest)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - arena/c3bc482e-universal-modder
+    paths:
+      - 'examples/ocarinaaa-android/**'
+      - '.github/workflows/build-android-apk.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Pinned by android/app/build.gradle (cmake { version "3.31.5" }).
+      # Same approach as upstream Shipwright-Android's docker/Containerfile:
+      # Kitware release on PATH, not the SDK cmake package.
+      - name: Install CMake 3.31.5
+        run: |
+          wget -q "https://github.com/Kitware/CMake/releases/download/v3.31.5/cmake-3.31.5-linux-x86_64.sh" -O /tmp/cmake.sh
+          chmod +x /tmp/cmake.sh
+          sudo /tmp/cmake.sh --skip-license --prefix=/usr/local
+          hash -r
+          cmake --version
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-31" "ndk;26.0.10792818"
+
+      - name: Fetch engine + rebrand JNI (setup.sh)
+        working-directory: examples/ocarinaaa-android
+        run: ./setup.sh
+
+      - name: Build APK (assembleRelease)
+        working-directory: examples/ocarinaaa-android/android
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Show APK
+        run: ls -la examples/ocarinaaa-android/android/app/build/outputs/apk/release/
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocarinaaa-release-apk
+          path: examples/ocarinaaa-android/android/app/build/outputs/apk/release/ocarinaaa_release_v*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish APK to apk-build branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APK=$(ls examples/ocarinaaa-android/android/app/build/outputs/apk/release/ocarinaaa_release_v*.apk | head -n1)
+          PUB=$(mktemp -d)
+          cd "$PUB"
+          git init -b apk-build
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          mkdir -p apk
+          cp "$GITHUB_WORKSPACE/$APK" apk/
+          {
+            echo "OcarinAAA of Time — Android APK"
+            echo "built_from: ${GITHUB_SHA}"
+            echo "run_id: ${GITHUB_RUN_ID}"
+            echo "run_url: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "artifact: $(basename "$APK")"
+          } > apk/BUILD-INFO.txt
+          git add -A
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -m "APK from run ${GITHUB_RUN_ID} (${GITHUB_SHA})"
+          git push -f origin apk-build
