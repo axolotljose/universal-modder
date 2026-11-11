@@ -45,10 +45,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            build-essential ninja-build pkg-config python3 \
+            build-essential ninja-build pkg-config python3 python3-pip \
             libzip-dev zipcmp zipmerge ziptool libbz2-dev \
             libpng-dev libtinyxml2-dev nlohmann-json3-dev \
-            libogg-dev libopus-dev libvorbis-dev libsdl2-dev || true
+            libogg-dev libopus-dev libvorbis-dev libopusfile-dev \
+            libsdl2-dev libsdl2-net-dev libglew-dev libspdlog-dev \
+            libx11-dev libusb-1.0-0-dev
           python3 --version
 
       - name: Install Android SDK packages
@@ -79,8 +81,21 @@ jobs:
       - name: Generate soh.o2r (host)
         working-directory: examples/ocarinaaa-android/Shipwright-Ports
         run: |
-          cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-linux --target GenerateSohOtr --parallel
+          set +e
+          CFG=$(cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release 2>&1)
+          CFG_RC=$?
+          echo "$CFG" | tail -n 80
+          if [ $CFG_RC -ne 0 ]; then
+            echo "::error::cmake configure failed: $(echo "$CFG" | grep -E 'CMake Error|Could not|not found|fatal' | head -n 15 | tr '\n' ' | ')"
+            exit 1
+          fi
+          BLD=$(cmake --build build-linux --target GenerateSohOtr --parallel 2>&1)
+          BLD_RC=$?
+          echo "$BLD" | tail -n 80
+          if [ $BLD_RC -ne 0 ]; then
+            echo "::error::GenerateSohOtr failed: $(echo "$BLD" | grep -E 'error:|Error|FAILED|fatal' | head -n 15 | tr '\n' ' | ')"
+            exit 1
+          fi
           mkdir -p Android/app/src/main/assets
           if [ -f soh/soh.o2r ]; then
             cp -f soh/soh.o2r Android/app/src/main/assets/soh.o2r
