@@ -1,0 +1,159 @@
+name: build-android-apk
+
+# Builds OcarinAAA of Time on top of Shipwright-Ports (SoH 9.2.3).
+# Published as a workflow artifact and force-pushed to the apk-build branch.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - arena/c3bc482e-universal-modder
+    paths:
+      - 'examples/ocarinaaa-android/**'
+      - '.github/workflows/build-android-apk.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install CMake 3.31.5
+        run: |
+          wget -q "https://github.com/Kitware/CMake/releases/download/v3.31.5/cmake-3.31.5-linux-x86_64.sh" -O /tmp/cmake.sh
+          chmod +x /tmp/cmake.sh
+          sudo /tmp/cmake.sh --skip-license --prefix=/usr/local
+          hash -r
+          cmake --version
+
+      - name: Install host deps (GenerateSohOtr)
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential ninja-build pkg-config python3 python3-pip \
+            libzip-dev zipcmp zipmerge ziptool libbz2-dev \
+            libpng-dev libtinyxml2-dev nlohmann-json3-dev \
+            libogg-dev libopus-dev libvorbis-dev libopusfile-dev \
+            libsdl2-dev libsdl2-net-dev libglew-dev libspdlog-dev \
+            libx11-dev libusb-1.0-0-dev
+          python3 --version
+
+      - name: Install Android SDK packages
+        run: |
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ] && [ -n "$ANDROID_HOME" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -n1)"
+          fi
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager not found (PATH='$PATH' ANDROID_HOME='$ANDROID_HOME')"
+            exit 1
+          fi
+          echo "using sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          for pkg in "platform-tools" "platforms;android-31" "ndk;26.0.10792818"; do
+            echo "installing $pkg ..."
+            if ! OUT=$("$SDKMANAGER" "$pkg" 2>&1); then
+              echo "$OUT" | tail -n 30
+              echo "::error::sdkmanager failed for [$pkg]: $(echo "$OUT" | tail -n 8 | tr '\n' ' | ')"
+              exit 1
+            fi
+          done
+
+      - name: Fetch Shipwright-Ports + rebrand + AAA payload
+        working-directory: examples/ocarinaaa-android
+        run: chmod +x ./setup.sh && ./setup.sh
+
+      - name: Generate soh.o2r (host)
+        working-directory: examples/ocarinaaa-android/Shipwright-Ports
+        run: |
+          set +e
+          CFG=$(cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release 2>&1)
+          CFG_RC=$?
+          echo "$CFG" | tail -n 80
+          if [ $CFG_RC -ne 0 ]; then
+            echo "::error::cmake configure failed: $(echo "$CFG" | grep -E 'CMake Error|Could not|not found|fatal' | head -n 15 | tr '\n' ' | ')"
+            exit 1
+          fi
+          BLD=$(cmake --build build-linux --target GenerateSohOtr --parallel 2>&1)
+          BLD_RC=$?
+          echo "$BLD" | tail -n 80
+          if [ $BLD_RC -ne 0 ]; then
+            echo "::error::GenerateSohOtr failed: $(echo "$BLD" | grep -E 'error:|Error|FAILED|fatal' | head -n 15 | tr '\n' ' | ')"
+            exit 1
+          fi
+          mkdir -p Android/app/src/main/assets
+          if [ -f soh/soh.o2r ]; then
+            cp -f soh/soh.o2r Android/app/src/main/assets/soh.o2r
+          elif [ -f soh.o2r ]; then
+            cp -f soh.o2r Android/app/src/main/assets/soh.o2r
+          else
+            echo "::error::soh.o2r was not produced by GenerateSohOtr"
+            ls -la soh/ || true
+            exit 1
+          fi
+          ls -la Android/app/src/main/assets/soh.o2r Android/app/src/main/assets/mods/
+
+      - name: Write local.properties
+        run: |
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          echo "sdk.dir=${SDK}" > examples/ocarinaaa-android/Shipwright-Ports/Android/local.properties
+
+      - name: Build APK (assembleRelease)
+        working-directory: examples/ocarinaaa-android/Shipwright-Ports/Android
+        run: |
+          if ! OUT=$(./gradlew assembleRelease --no-daemon --stacktrace 2>&1); then
+            echo "$OUT" | tail -n 100
+            echo "::error::gradle failed: $(echo "$OUT" | grep -E 'FAILURE:|What went wrong|error:|Execution failed|Could not' | head -n 20 | tr '\n' ' | ')"
+            exit 1
+          fi
+          echo "$OUT" | tail -n 20
+
+      - name: Show APK
+        run: find examples/ocarinaaa-android/Shipwright-Ports/Android/app/build/outputs/apk -name '*.apk' -ls
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocarinaaa-release-apk
+          path: examples/ocarinaaa-android/Shipwright-Ports/Android/app/build/outputs/apk/release/ocarinaaa_*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish APK to apk-build branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APK=$(find examples/ocarinaaa-android/Shipwright-Ports/Android/app/build/outputs/apk/release -name 'ocarinaaa_*.apk' | head -n1)
+          PUB=$(mktemp -d)
+          cd "$PUB"
+          git init -b apk-build
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          mkdir -p apk
+          cp "$GITHUB_WORKSPACE/$APK" apk/
+          {
+            echo "OcarinAAA of Time — Android APK (Shipwright-Ports 9.2.3)"
+            echo "built_from: ${GITHUB_SHA}"
+            echo "run_id: ${GITHUB_RUN_ID}"
+            echo "run_url: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "artifact: $(basename "$APK")"
+          } > apk/BUILD-INFO.txt
+          git add -A
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -m "APK from run ${GITHUB_RUN_ID} (${GITHUB_SHA})"
+          git push -f origin apk-build
