@@ -2,15 +2,15 @@
 
 Android port of [OcarinAAA-of-Time](https://github.com/axolotljose/OcarinAAA-of-Time)
 (modernized, voice-acted *Ocarina of Time* built on Ship of Harkinian) using
-[Shipwright-Android](https://github.com/axolotljose/Shipwright-Android) as the
-base engine.
+[Shipwright-Ports](https://github.com/axolotljose/Shipwright-Ports) as the
+base engine (SoH **9.2.3**, matching `OcarinAAA.o2r` `portVersion`).
 
-The APK ships the Ship of Harkinian engine (9.0.2, Android glue by
-Waterdish/Shipwright-Android), the `OcarinAAA.o2r` mod archive, and the
-OcarinAAA data files (subtitle voice lines + credits sequence). On first launch
-the app installs everything into the `SOH/` folder at the root of device
-storage, extracts your own legally dumped OoT ROM, and loads the mod as a
-patch archive on top of the base game.
+The APK ships the Ship of Harkinian engine (9.2.3, Android glue from
+Shipwright-Ports), the `OcarinAAA.o2r` mod archive, and the OcarinAAA data
+files (subtitle voice lines + credits sequence). On first launch the app
+installs everything into the `SOH/` folder (folder picker on Android 11+),
+extracts your own legally dumped OoT ROM, and loads the mod as a patch
+archive on top of the base game.
 
 ## Layout
 
@@ -68,13 +68,16 @@ examples/ocarinaaa-android/
 
 ```bash
 cd examples/ocarinaaa-android
-./setup.sh                 # clone Shipwright-Android + submodules, rebrand JNI
-cd android
-./gradlew help             # fast smoke test: validates Gradle/AGP/config
-./gradlew assembleRelease  # or assembleDebug
+./setup.sh                 # clone Shipwright-Ports + submodules, rebrand JNI, bundle AAA payload
+# generate soh.o2r (host):
+cmake -S Shipwright-Ports -B Shipwright-Ports/build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build Shipwright-Ports/build-linux --target GenerateSohOtr --parallel
+cp Shipwright-Ports/soh/soh.o2r Shipwright-Ports/Android/app/src/main/assets/soh.o2r
+cd Shipwright-Ports/Android
+./gradlew assembleRelease
 ```
 
-The APK lands at `android/app/build/outputs/apk/release/ocarinaaa_release_v1.0.0.apk`.
+The APK lands at `Shipwright-Ports/Android/app/build/outputs/apk/release/ocarinaaa_release_v1.0.0-ports.9.2.3.apk`.
 
 The first `assembleRelease` compiles the entire Ship of Harkinian engine for
 `arm64-v8a` — expect 10–30+ minutes depending on the machine. Subsequent
