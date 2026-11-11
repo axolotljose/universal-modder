@@ -89,18 +89,8 @@ if [ -f "$STRINGS" ]; then
     sed -i 's|>Ship of Harkinian<|>OcarinAAA of Time<|' "$STRINGS"
 fi
 
-# Launcher icons
-if [ -d android/app/src/main/res ]; then
-    for dens in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
-        src="android/app/src/main/res/mipmap-${dens}"
-        dst="$BASE_DIR/Android/app/src/main/res/mipmap-${dens}"
-        if [ -d "$src" ] && [ -d "$dst" ]; then
-            cp -f "$src"/ic_launcher.png "$dst/" 2>/dev/null || true
-            cp -f "$src"/ic_launcher_round.png "$dst/" 2>/dev/null || true
-        fi
-    done
-    echo "[setup] Copied OcarinAAA launcher icons"
-fi
+# Launcher icons: Ports already ships adaptive webp mipmaps. Do not drop
+# extra PNG ic_launcher files next to them — mergeReleaseResources fails.
 
 # AAA payload into APK assets
 ASSETS="$BASE_DIR/Android/app/src/main/assets"
