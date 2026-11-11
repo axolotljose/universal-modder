@@ -36,6 +36,9 @@ if ! grep -q "project(Ship VERSION ${EXPECTED_VERSION}" "$BASE_DIR/CMakeLists.tx
     exit 1
 fi
 
+# --- ROM extractor OOM fix (crash ~77%) ------------------------------------
+python3 patches/fix-extract-oom.py "$BASE_DIR"
+
 # --- rebrand JNI + Java package strings ------------------------------------
 echo "[setup] Rebranding ${OLD_PKG} -> ${NEW_PKG} ..."
 while IFS= read -r -d '' f; do
